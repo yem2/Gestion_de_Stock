@@ -34,3 +34,10 @@
 - [ ] Créer une base Neon distincte d'OCTOPLUS
 - [ ] Configurer les variables d'environnement Vercel
 - [ ] Vérifier les builds et tester en preview avant la production
+
+- [x] Authentification, rôles et journal d'audit (migration 0001)
+- [x] En-têtes de sécurité HTTP
+- [ ] Écran de gestion des utilisateurs
+- [ ] Mouvements de stock transactionnels
+- [ ] Fournisseurs, clients, ventes
+- [ ] Rapports PDF/Excel

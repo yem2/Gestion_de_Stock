@@ -22,7 +22,16 @@ const money = (value: number) => new Intl.NumberFormat("fr-FR", {
   style: "currency", currency: "XAF", maximumFractionDigits: 0
 }).format(value);
 
-export default function StockDashboard() {
+type DashboardUser = { name: string; roleLabel: string };
+
+export default function StockDashboard({ user }: { user: DashboardUser }) {
+  const initials = user.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "U";
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  }
+
   const [products, setProducts] = useState<Product[]>([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
@@ -39,6 +48,7 @@ export default function StockDashboard() {
     try {
       const response = await fetch("/api/products", { cache: "no-store" });
       const data = await response.json();
+      if (response.status === 401) { window.location.href = "/login"; return; }
       if (!response.ok) throw new Error(data.error || "Chargement impossible.");
       setProducts(data.products || []);
       setError("");
@@ -124,8 +134,9 @@ export default function StockDashboard() {
             <span className="plan-status"><i /> Projet en initialisation</span>
           </div>
           <div className="user-card">
-            <div className="avatar">AD</div>
-            <div className="user-info"><strong>Administrateur</strong><span>Compte à configurer</span></div>
+            <div className="avatar">{initials}</div>
+            <div className="user-info"><strong>{user.name}</strong><span>{user.roleLabel}</span></div>
+            <button type="button" className="logout-btn" onClick={logout}>Déconnexion</button>
             <ChevronDown size={16} />
           </div>
         </div>
@@ -137,7 +148,7 @@ export default function StockDashboard() {
           <div className="top-actions">
             <div className="environment-pill"><i /> Espace de travail</div>
             <button className="icon-button" aria-label="Notifications" type="button" onClick={() => setNotice(lowStock ? `${lowStock} produit(s) au seuil minimum.` : "Aucune alerte de stock pour le moment.")}><Bell size={18}/>{lowStock > 0 && <b />}</button>
-            <div className="top-avatar">AD</div>
+            <div className="top-avatar">{initials}</div>
           </div>
         </header>
 
