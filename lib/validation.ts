@@ -42,3 +42,27 @@ export const userUpdateSchema = z.object({
   active: z.boolean().optional(),
   password: passwordSchema.optional()
 });
+
+export const productUpdateSchema = z
+  .object({
+    sku: z.string().trim().min(1, "La référence est obligatoire").max(80).optional(),
+    name: z.string().trim().min(2, "Le nom doit contenir au moins 2 caractères").max(160).optional(),
+    category: z.string().trim().max(100).optional(),
+    unitPrice: z.coerce.number().min(0).max(100000000000).optional(),
+    minQuantity: z.coerce.number().int().min(0).max(100000000).optional(),
+    archived: z.boolean().optional()
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: "Aucune modification fournie." });
+
+export const movementSchema = z
+  .object({
+    productId: z.coerce.number().int().positive("Produit invalide"),
+    type: z.enum(["in", "out", "adjustment"]),
+    // Entrée / sortie : quantité déplacée. Ajustement : nouvelle quantité comptée en inventaire.
+    quantity: z.coerce.number().int().min(0).max(100000000),
+    note: z.string().trim().max(300).optional()
+  })
+  .refine((value) => value.type === "adjustment" || value.quantity > 0, {
+    message: "La quantité doit être supérieure à 0.",
+    path: ["quantity"]
+  });

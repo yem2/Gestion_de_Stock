@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 import {
-  DUMMY_HASH, SESSION_COOKIE, createSessionToken, logAudit, sessionCookieOptions, verifyPassword
+  DUMMY_HASH, SESSION_COOKIE, clientIp, createSessionToken, isIpThrottled, logAudit, recordFailedAttempt,
+  sessionCookieOptions, verifyPassword
 } from "@/lib/auth";
 import { loginSchema } from "@/lib/validation";
 
@@ -16,6 +17,13 @@ export async function POST(request: Request) {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Corps JSON invalide." }, { status: 400 });
+  }
+  const ip = clientIp(request);
+  if (await isIpThrottled(ip)) {
+    return NextResponse.json(
+      { error: "Trop de tentatives depuis cette adresse. Réessayez dans quelques minutes." },
+      { status: 429 }
+    );
   }
   const parsed = loginSchema.safeParse(body);
   if (!parsed.success) {
@@ -41,6 +49,7 @@ export async function POST(request: Request) {
     }
 
     if (!user || !valid || !user.active) {
+      await recordFailedAttempt(ip);
       if (user) {
         const attempts = Number(user.failedAttempts) + 1;
         if (attempts >= MAX_ATTEMPTS) {

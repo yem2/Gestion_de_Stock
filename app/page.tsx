@@ -19,5 +19,5 @@ export default async function HomePage() {
   if (!user) {
     redirect((await hasUsers()) ? "/login" : "/setup");
   }
-  return <StockDashboard user={{ name: user.name, roleLabel: ROLE_LABELS[user.role] }} />;
+  return <StockDashboard user={{ name: user.name, roleLabel: ROLE_LABELS[user.role], role: user.role }} />;
 }

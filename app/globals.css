@@ -169,3 +169,35 @@ tbody tr:hover{background:#fffcfc}
 .auth-error{margin:0;padding:10px 12px;border-radius:8px;background:#fdecee;color:#a50f16;font-size:.9rem}
 .logout-btn{margin-top:10px;width:100%;padding:8px;border:1px solid #2c2c33;border-radius:8px;background:transparent;color:#d0d0d8;font-size:.85rem;cursor:pointer}
 .logout-btn:hover{background:#18181c;color:#fff}
+
+/* Étape 4 : navigation, mouvements de stock, modification des produits */
+.modal select{width:100%;height:40px;border:1px solid #e2e6ef;border-radius:8px;padding:0 9px;font-size:12px;outline:none;color:#293249;background:#fff}
+.modal select:focus{border-color:#f77a8b;box-shadow:0 0 0 3px #d719201a}
+.form-error{margin:0 0 6px;padding:10px 12px;border-radius:8px;background:#fdecee;color:#a50f16;font-size:11px}
+.row-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mini-btn{border:1px solid #e4e8f0;background:#fff;border-radius:7px;padding:6px 9px;font-size:10px;font-weight:700;color:#6c7488;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.mini-btn:hover{background:#fff5f6;color:#c43344;border-color:#f4cdd2}
+.mini-btn.danger:hover{background:#fdecee;color:#a50f16}
+.push-right{margin-left:auto}
+.text-button.inline{margin-top:0}
+tr.archived td{opacity:.65}
+.note-cell{max-width:260px;overflow:hidden;text-overflow:ellipsis}
+.move-pill{display:inline-flex;border-radius:20px;padding:6px 9px;font-size:9px;font-weight:700}
+.move-in{color:#188866;background:#e9f8f1}.move-out{color:#b3202e;background:#fdecee}.move-adjustment{color:#9a6a12;background:#fff5e4}
+.segmented{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:15px}
+.seg{border:1px solid #e2e6ef;background:#fff;border-radius:8px;padding:10px 8px;font-size:11px;font-weight:700;color:#6c7488}
+.seg.active{border-color:#d71920;background:#fdecee;color:#b3141b}
+.stock-preview{background:#fbfcfe;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:11px;color:#5e687d;margin-bottom:15px}
+.stock-preview .neg{color:#b3202e}
+.filter-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.filter-tab{border:1px solid #e4e8f0;background:#fff;border-radius:20px;padding:7px 12px;font-size:10px;font-weight:700;color:#6c7488}
+.filter-tab.active{background:#0c0c0e;border-color:#0c0c0e;color:#fff}
+.mobile-nav{display:none}
+.sidebar-bottom .user-card{padding-bottom:0}
+@media(max-width:760px){
+  .mobile-nav{display:flex;gap:6px;overflow-x:auto;padding:10px 15px;background:#0c0c0e}
+  .mobile-nav button{display:inline-flex;align-items:center;gap:6px;border:1px solid #2c2c33;background:transparent;color:#d0d0d8;border-radius:20px;padding:8px 12px;font-size:11px;font-weight:700;white-space:nowrap}
+  .mobile-nav button.active{background:#d7192933;border-color:#d71920;color:#ff7a80}
+  .welcome-row .row-actions{width:100%}
+  .welcome-row .row-actions button{flex:1}
+}

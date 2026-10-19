@@ -2,22 +2,20 @@
 
 Application web de gestion commerciale des stocks, en français et en FCFA (XAF). Projet indépendant d'OCTOPLUS.
 
-## Architecture initiale
+## Architecture
 
-- Next.js App Router + React + TypeScript
+- Next.js 16 (App Router) + React 19 + TypeScript
 - API Routes côté serveur
 - Neon PostgreSQL via `@neondatabase/serverless`
 - Tailwind CSS 4 pour la base de style
-- Déploiement prévu sur Vercel
+- Déploiement sur Vercel
 
-> La stack exacte de toutes les dépendances internes d'OCTOPLUS n'a pas pu être vérifiée. Cette base reprend Next.js et l'architecture Vercel/Neon retenue, sans toucher à OCTOPLUS.
-
-## Structure du projet (alignée sur OCTOPLUS)
+## Structure du projet
 
 - `app/` : pages et routes API (App Router)
-- `components/` : composants d'interface
-- `lib/` : connexion base de données et validation
-- `db/` : migrations SQL
+- `components/` : interface (tableau de bord, produits, mouvements, fenêtres de saisie)
+- `lib/` : base de données, authentification, rôles, requêtes de stock, validation
+- `db/` : migrations SQL (à exécuter dans l'ordre)
 - `docs/` : feuille de route et notes de sécurité
 
 Charte graphique : rouge et noir, comme OCTOPLUS.
@@ -26,34 +24,50 @@ Charte graphique : rouge et noir, comme OCTOPLUS.
 
 1. Installe Node.js 20.9 ou plus récent.
 2. Installe les dépendances : `npm install`
-3. Copie `.env.example` vers `.env.local`.
+3. Copie `.env.example` vers `.env.local` et renseigne les variables.
 4. Crée une base de données **distincte** dans Neon et place son URL dans `DATABASE_URL`.
-5. Exécute le SQL de `db/0000_initial_schema.sql` puis `db/0001_auth.sql` dans le SQL Editor de cette base Neon.
+5. Exécute dans le SQL Editor de cette base, **dans l'ordre** : `db/0000_initial_schema.sql`, `db/0001_auth.sql`, `db/0002_stock.sql`.
 6. Lance `npm run dev`, puis ouvre `http://localhost:3000`.
 
-Sans `DATABASE_URL` et la migration, l'interface s'affiche mais les données et l'ajout de produits ne fonctionnent pas.
+Vérifications : `npm run typecheck`, `npm run lint`, `npm run build`.
 
-## API incluse
+## Variables d'environnement
 
-- `GET /api/health` : vérification de connexion à Neon.
-- `GET /api/products` : liste les produits.
-- `POST /api/products` : crée un produit avec validation des données.
+- `DATABASE_URL` : base Neon de ce projet.
+- `AUTH_SECRET` : 32 caractères minimum (vérifiable sur `/api/health`).
+- `SETUP_KEY` : uniquement pour la première installation ; supprime-la ensuite.
 
-## À faire avant la production
+## Mise à jour d'une base existante
 
-- Authentification et sessions sécurisées.
-- Autorisations côté serveur pour les rôles admin, manager, magasinier et vendeur.
-- Mouvements de stock atomiques et audit des modifications.
-- CRUD fournisseurs, clients, ventes, catégories et utilisateurs.
-- Tests automatisés, gestion d'erreurs et revue de sécurité.
-- Ajouter `DATABASE_URL` dans les variables d'environnement Vercel (Production/Preview/Development selon le besoin).
-
-Ne jamais publier le fichier `.env.local` ni placer des secrets dans GitHub.
-
+À chaque nouvelle version, exécute les nouvelles migrations dans Neon avant (ou juste après) le déploiement. La migration `0002_stock.sql` peut être relancée sans risque. Tant qu'elle n'est pas exécutée, l'application affiche « Migration manquante ».
 
 ## Authentification et rôles
 
-- Variables requises : `DATABASE_URL`, `AUTH_SECRET` (32 caractères minimum) et, pour la première installation, `SETUP_KEY`.
-- Premier démarrage : ouvrir `/setup`, saisir `SETUP_KEY` et créer le super administrateur. Cette page se désactive dès qu'un compte existe ; supprimez ensuite `SETUP_KEY`.
-- Rôles : super administrateur, administrateur, gestionnaire, magasinier, vendeur. Un administrateur ne gère que les rôles inférieurs au sien.
-- Mots de passe hachés (scrypt), sessions signées de 8 h, blocage de 15 minutes après 5 échecs, journal d'audit.
+- Premier démarrage : ouvrir `/setup`, saisir `SETUP_KEY` et créer le super administrateur. La page se désactive dès qu'un compte existe.
+- Mots de passe hachés (scrypt), sessions signées de 8 h, blocage du compte 15 minutes après 5 échecs, limitation à 20 échecs par adresse IP sur 15 minutes, journal d'audit.
+
+| Action | Super admin / Admin / Gestionnaire | Magasinier | Vendeur |
+|---|---|---|---|
+| Voir les produits | oui | oui | oui |
+| Créer un produit | oui | oui | non |
+| Entrées / sorties de stock | oui | oui | non |
+| Ajustement d'inventaire | oui | non | non |
+| Modifier / archiver un produit | oui | non | non |
+| Voir l'historique des mouvements | oui | oui | non |
+| Gérer les utilisateurs (API) | Super admin / Admin (rôles inférieurs) | non | non |
+
+## API
+
+- `GET /api/health` : état de la base et de la configuration d'authentification.
+- `GET /api/products` : produits actifs (`?archived=1` : archivés, gestionnaires et au-dessus).
+- `POST /api/products` : crée un produit (la quantité initiale crée un mouvement « Stock initial »).
+- `PATCH /api/products/:id` : modifie un produit, ou l'archive / restaure (`{ "archived": true }`). La quantité ne se change que par un mouvement.
+- `GET /api/movements` : historique (`?productId=`, `?type=in|out|adjustment`, `?limit=`).
+- `POST /api/movements` : `{ productId, type, quantity, note? }`. Entrée / sortie : quantité déplacée. Ajustement : nouvelle quantité comptée.
+- `GET/POST /api/users`, `PATCH /api/users/:id` : gestion des utilisateurs.
+
+Les mouvements s'exécutent en une seule instruction SQL : le stock ne peut pas devenir négatif et deux sorties simultanées ne se déduisent pas deux fois.
+
+## À faire
+
+Voir `docs/ROADMAP.md`. Ne jamais publier `.env.local` ni placer de secrets dans GitHub.

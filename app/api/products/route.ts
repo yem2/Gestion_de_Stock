@@ -1,34 +1,39 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
-import { authorize, logAudit } from "@/lib/auth";
+import { STOCK_MANAGERS, STOCK_WRITERS, authorize, logAudit } from "@/lib/auth";
+import { createProduct, listProducts } from "@/lib/stock";
 import { productInputSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
 
+function dbError(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("DATABASE_URL")) {
+    return NextResponse.json({ error: "Base de données non configurée." }, { status: 503 });
+  }
+  if (message.includes("archived") && message.includes("does not exist")) {
+    return NextResponse.json(
+      { error: "Migration manquante : exécutez db/0002_stock.sql dans Neon." },
+      { status: 500 }
+    );
+  }
+  return NextResponse.json({ error: fallback }, { status: 500 });
+}
+
 export async function GET(request: Request) {
-  const auth = await authorize(request);
+  const wantsArchived = new URL(request.url).searchParams.get("archived") === "1";
+  const auth = await authorize(request, wantsArchived ? STOCK_MANAGERS : undefined);
   if ("error" in auth) return auth.error;
   try {
-    const sql = getSql();
-    const rows = await sql`
-      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
-             min_quantity AS "minQuantity", created_at AS "createdAt"
-      FROM products
-      ORDER BY created_at DESC
-      LIMIT 500
-    `;
-    return NextResponse.json({ products: rows });
+    const products = await listProducts(getSql(), wantsArchived);
+    return NextResponse.json({ products });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("DATABASE_URL")) {
-      return NextResponse.json({ error: "Base de données non configurée." }, { status: 503 });
-    }
-    return NextResponse.json({ error: "Erreur serveur." }, { status: 500 });
+    return dbError(error, "Erreur serveur.");
   }
 }
 
 export async function POST(request: Request) {
-  const auth = await authorize(request, ["super_admin", "admin", "manager", "storekeeper"]);
+  const auth = await authorize(request, STOCK_WRITERS);
   if ("error" in auth) return auth.error;
 
   let body: unknown;
@@ -47,24 +52,17 @@ export async function POST(request: Request) {
   }
 
   try {
-    const sql = getSql();
     const { sku, name, category, quantity, unitPrice, minQuantity } = parsed.data;
-    const rows = await sql`
-      INSERT INTO products (sku, name, category, quantity, unit_price, min_quantity)
-      VALUES (${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity})
-      RETURNING id, sku, name, category, quantity, unit_price AS "unitPrice",
-                min_quantity AS "minQuantity", created_at AS "createdAt"
-    `;
-    await logAudit(auth.user.id, "product_create", "product", Number(rows[0].id), sku);
-    return NextResponse.json({ product: rows[0] }, { status: 201 });
+    const product = await createProduct(getSql(), {
+      sku, name, category: category || "Général", quantity, unitPrice, minQuantity, userId: auth.user.id
+    });
+    await logAudit(auth.user.id, "product_create", "product", Number(product.id), sku);
+    return NextResponse.json({ product }, { status: 201 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Erreur serveur";
-    if (message.toLowerCase().includes("unique")) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (message.includes("unique") || message.includes("duplicate")) {
       return NextResponse.json({ error: "Cette référence existe déjà." }, { status: 409 });
     }
-    if (message.includes("DATABASE_URL")) {
-      return NextResponse.json({ error: "Base de données non configurée." }, { status: 503 });
-    }
-    return NextResponse.json({ error: "Impossible d’enregistrer le produit." }, { status: 500 });
+    return dbError(error, "Impossible d’enregistrer le produit.");
   }
 }
