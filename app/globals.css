@@ -205,3 +205,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .auth-ok{padding:12px 14px;border-radius:10px;background:var(--ok-soft);color:#14532d;font-size:.92rem}
 .link-box{display:flex;gap:8px;align-items:stretch}
 .link-box input{flex:1;min-width:0;font-size:.85rem}
+
+/* Lignes d'une commande fournisseur */
+.purchase-line{display:grid;gap:8px;grid-template-columns:minmax(0,1fr) 80px 110px 40px;align-items:center;margin-bottom:8px}
+@media (max-width:479px){.purchase-line{grid-template-columns:minmax(0,1fr) 64px 84px 36px}}

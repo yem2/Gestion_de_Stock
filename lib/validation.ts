@@ -101,3 +101,31 @@ export const recoverSchema = z.object({
   email: z.string().trim().toLowerCase().email("E-mail invalide").max(180),
   recoveryKey: z.string().min(1).max(200)
 });
+
+
+export const purchaseSchema = z.object({
+  supplierId: optionalId,
+  note: optionalText(300),
+  items: z
+    .array(
+      z.object({
+        productId: z.coerce.number().int().positive("Choisissez un produit"),
+        quantity: z.coerce.number().int("Quantité invalide").min(1, "La quantité doit être au moins 1").max(1000000),
+        unitCost: z.coerce.number().min(0, "Le coût ne peut pas être négatif").max(1000000000)
+      })
+    )
+    .min(1, "Ajoutez au moins un article")
+    .max(50, "50 articles maximum par commande")
+});
+
+export const settingsSchema = z.object({
+  companyName: z.string().trim().min(2, "Le nom de l’entreprise est obligatoire").max(120),
+  address: optionalText(200),
+  phone: optionalText(40),
+  footer: optionalText(200)
+});
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Saisissez votre mot de passe actuel").max(128),
+  newPassword: passwordSchema
+});

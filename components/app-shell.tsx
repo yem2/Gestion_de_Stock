@@ -4,8 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  Boxes, ChartNoAxesCombined, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
-  ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, X
+  Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
+  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, X
 } from "lucide-react";
 import { can, type Permission, type Role } from "@/lib/roles";
 
@@ -16,10 +16,13 @@ const NAV: { href: string; label: string; icon: typeof Package; permission?: Per
   { href: "/produits", label: "Produits", icon: Package },
   { href: "/mouvements", label: "Mouvements", icon: ArrowLeftRight, permission: "movements.view" },
   { href: "/ventes", label: "Ventes", icon: ShoppingCart, permission: "sales.view" },
+  { href: "/achats", label: "Achats", icon: ClipboardList, permission: "purchases.view" },
   { href: "/clients", label: "Clients", icon: Users, permission: "customers.view" },
   { href: "/fournisseurs", label: "Fournisseurs", icon: Truck, permission: "suppliers.view" },
   { href: "/rapports", label: "Rapports", icon: ChartNoAxesCombined, permission: "reports.view" },
-  { href: "/utilisateurs", label: "Utilisateurs", icon: ShieldCheck, permission: "users.manage" }
+  { href: "/utilisateurs", label: "Utilisateurs", icon: ShieldCheck, permission: "users.manage" },
+  { href: "/journal", label: "Journal", icon: History, permission: "audit.view" },
+  { href: "/parametres", label: "Paramètres", icon: Settings }
 ];
 
 export default function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {

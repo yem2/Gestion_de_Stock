@@ -45,3 +45,8 @@
 - [x] Interface adaptable (mobile, tablette, ordinateur)
 - [ ] Tests automatisés
 - [ ] Export PDF natif des rapports
+
+- [x] Achats fournisseurs avec réception en stock (migration 0004)
+- [x] Journal d'activité
+- [x] Paramètres de l'entreprise et changement de mot de passe
+- [x] Mot de passe oublié (migration 0003)

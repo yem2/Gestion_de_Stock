@@ -28,7 +28,7 @@ Charte graphique : rouge et noir, comme OCTOPLUS.
 2. Installe les dépendances : `npm install`
 3. Copie `.env.example` vers `.env.local`.
 4. Crée une base de données **distincte** dans Neon et place son URL dans `DATABASE_URL`.
-5. Exécute le SQL de `db/0000_initial_schema.sql`, `db/0001_auth.sql` puis `db/0002_modules.sql` dans le SQL Editor de cette base Neon.
+5. Exécute le SQL de `db/0000_initial_schema.sql`, `db/0001_auth.sql` puis `db/0002_modules.sql`, `db/0003_password_reset.sql` puis `db/0004_purchases_settings.sql` dans le SQL Editor de cette base Neon.
 6. Lance `npm run dev`, puis ouvre `http://localhost:3000`.
 
 Sans `DATABASE_URL` et la migration, l'interface s'affiche mais les données et l'ajout de produits ne fonctionnent pas.
@@ -79,3 +79,10 @@ L'interface s'adapte aux téléphones, tablettes et ordinateurs : menu latéral 
 - **Sans e-mails** : la demande apparaît en haut de la page Utilisateurs ; l'administrateur génère un lien à usage unique (1 h) et le remet à l'utilisateur. Un administrateur ne traite que les rôles inférieurs au sien.
 - **Récupération du propriétaire** (`RECOVERY_KEY`) : sur `/forgot-password`, « J'ai une clé de récupération » donne immédiatement un lien avec l'e-mail du compte et la clé. Sans `RECOVERY_KEY`, cette voie est désactivée ; après 8 échecs en 15 minutes elle se bloque.
 - Les liens sont stockés sous forme d'empreinte, ne servent qu'une fois, et un changement de mot de passe ferme toutes les sessions ouvertes. Migration à exécuter : `db/0003_password_reset.sql`.
+
+
+## Achats, journal et paramètres
+
+- **Achats** : commandes aux fournisseurs (articles, quantités, coût unitaire). « Réceptionner » passe la commande à *reçue*, augmente le stock et trace les entrées dans la même requête SQL ; une commande ne peut être reçue qu'une fois. Annulation possible tant qu'elle n'est pas reçue.
+- **Journal d'activité** (administrateurs) : les 300 dernières actions (connexions, produits, ventes, achats, exports, paramètres…) avec filtre.
+- **Paramètres** : changement de son propre mot de passe (ancien mot de passe exigé, autres sessions fermées) et informations de l'entreprise (nom, adresse, téléphone, message) reprises sur les reçus de vente.

@@ -23,6 +23,7 @@ export default function SalesView({ role }: { role: Role }) {
   const sales = useApi<{ sales: Sale[] }>("/api/sales");
   const products = useApi<{ products: Product[] }>("/api/products");
   const customers = useApi<{ customers: Customer[] }>("/api/customers");
+  const company = useApi<{ settings: { companyName: string; address: string; phone: string; footer: string } }>("/api/settings");
   const [open, setOpen] = useState(false);
   const [lines, setLines] = useState<Line[]>([{ key: 1, productId: "", quantity: "1" }]);
   const [customerId, setCustomerId] = useState("");
@@ -176,7 +177,10 @@ export default function SalesView({ role }: { role: Role }) {
       {receipt && (
         <Modal title={`Reçu n° ${receipt.sale.id}`} onClose={() => setReceipt(null)}>
           <div className="print-area receipt">
-            <h3>Gestion de Stock</h3>
+            <h3>{company.data?.settings.companyName ?? "Gestion de Stock"}</h3>
+            {(company.data?.settings.address || company.data?.settings.phone) && (
+              <p className="muted">{[company.data?.settings.address, company.data?.settings.phone].filter(Boolean).join(" · ")}</p>
+            )}
             <p className="muted">{dateTime(receipt.sale.createdAt)} · {receipt.sale.customerName ?? "Client comptoir"}</p>
             {receipt.items.map((item, index) => (
               <div className="receipt-line" key={index}>
@@ -186,6 +190,7 @@ export default function SalesView({ role }: { role: Role }) {
             ))}
             <div className="receipt-total"><span>Total</span><span>{money(receipt.sale.total)}</span></div>
             <p className="muted" style={{ marginTop: 10 }}>Paiement : {PAYMENT_LABELS[receipt.sale.paymentMethod] ?? receipt.sale.paymentMethod}{receipt.sale.status === "cancelled" ? " · VENTE ANNULÉE" : ""}</p>
+            {company.data?.settings.footer && <p className="muted" style={{ marginTop: 6 }}>{company.data.settings.footer}</p>}
           </div>
           <div className="form-actions no-print">
             <button type="button" className="btn" onClick={() => setReceipt(null)}>Fermer</button>
