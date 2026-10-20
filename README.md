@@ -70,3 +70,12 @@ Ne jamais publier le fichier `.env.local` ni placer des secrets dans GitHub.
 - **Utilisateurs** : création, rôle, activation, réinitialisation du mot de passe.
 
 L'interface s'adapte aux téléphones, tablettes et ordinateurs : menu latéral sur grand écran, menu coulissant sur mobile, tableaux transformés en cartes sur petit écran.
+
+
+## Mot de passe oublié
+
+- Sur `/login`, le lien « Mot de passe oublié ? » ouvre `/forgot-password`. La réponse est toujours la même, que l'e-mail existe ou non, et une limite de 3 demandes par heure s'applique.
+- **Avec e-mails** (`RESEND_API_KEY` et `MAIL_FROM` définis) : un lien valable 1 h est envoyé à l'utilisateur. Si l'envoi échoue, la demande passe en file d'attente administrateur.
+- **Sans e-mails** : la demande apparaît en haut de la page Utilisateurs ; l'administrateur génère un lien à usage unique (1 h) et le remet à l'utilisateur. Un administrateur ne traite que les rôles inférieurs au sien.
+- **Récupération du propriétaire** (`RECOVERY_KEY`) : sur `/forgot-password`, « J'ai une clé de récupération » donne immédiatement un lien avec l'e-mail du compte et la clé. Sans `RECOVERY_KEY`, cette voie est désactivée ; après 8 échecs en 15 minutes elle se bloque.
+- Les liens sont stockés sous forme d'empreinte, ne servent qu'une fois, et un changement de mot de passe ferme toutes les sessions ouvertes. Migration à exécuter : `db/0003_password_reset.sql`.

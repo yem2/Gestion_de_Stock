@@ -197,3 +197,11 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
   .print-area{position:absolute;left:0;top:0;width:100%;padding:16px}
   .no-print{display:none!important}
 }
+
+/* Mot de passe oublié */
+.auth-link{display:block;text-align:center;color:var(--accent);font-weight:600;font-size:.92rem;text-decoration:none;padding:6px}
+.auth-link:hover{text-decoration:underline}
+.auth-text-btn{margin-top:0!important;min-height:40px!important;background:transparent!important;color:var(--muted)!important;font-size:.9rem!important;font-weight:600!important}
+.auth-ok{padding:12px 14px;border-radius:10px;background:var(--ok-soft);color:#14532d;font-size:.92rem}
+.link-box{display:flex;gap:8px;align-items:stretch}
+.link-box input{flex:1;min-width:0;font-size:.85rem}

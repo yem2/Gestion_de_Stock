@@ -87,3 +87,17 @@ export const saleSchema = z.object({
     .min(1, "Ajoutez au moins un article")
     .max(50, "50 articles maximum par vente")
 });
+
+export const forgotSchema = z.object({
+  email: z.string().trim().toLowerCase().email("E-mail invalide").max(180)
+});
+
+export const resetSchema = z.object({
+  token: z.string().min(20).max(200),
+  password: passwordSchema
+});
+
+export const recoverSchema = z.object({
+  email: z.string().trim().toLowerCase().email("E-mail invalide").max(180),
+  recoveryKey: z.string().min(1).max(200)
+});

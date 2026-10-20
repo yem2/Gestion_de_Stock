@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
@@ -181,4 +181,14 @@ export async function hasUsers() {
   } catch {
     return true;
   }
+}
+
+export function hashToken(token: string) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/** Jeton de réinitialisation : seule son empreinte est stockée en base. */
+export function newResetToken() {
+  const token = randomBytes(32).toString("base64url");
+  return { token, hash: hashToken(token) };
 }
