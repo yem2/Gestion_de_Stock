@@ -1,84 +1,96 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
-import { STOCK_MANAGERS, STOCK_WRITERS, authorize, logAudit } from "@/lib/auth";
-import { applyMovement, listMovements, type MovementType } from "@/lib/stock";
+import { authorize, logAudit } from "@/lib/auth";
+import { rolesFor } from "@/lib/roles";
+import { fail, parseBody, serverError } from "@/lib/api";
 import { movementSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
 
-const TYPES = ["in", "out", "adjustment"] as const;
-
 export async function GET(request: Request) {
-  const auth = await authorize(request, STOCK_WRITERS);
+  const auth = await authorize(request, rolesFor("movements.view"));
   if ("error" in auth) return auth.error;
-
-  const params = new URL(request.url).searchParams;
-  const productIdRaw = Number(params.get("productId"));
-  const productId = Number.isInteger(productIdRaw) && productIdRaw > 0 ? productIdRaw : null;
-  const typeRaw = params.get("type");
-  const type = TYPES.find((value) => value === typeRaw) ?? null;
-  const limitRaw = Number(params.get("limit"));
-  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50;
-
   try {
-    const movements = await listMovements(getSql(), { productId, type: type as MovementType | null, limit });
+    const sql = getSql();
+    const movements = await sql`
+      SELECT m.id, m.movement_type AS type, m.quantity, m.note, m.created_at AS "createdAt",
+             p.name AS "productName", p.sku, s.name AS "supplierName", u.name AS "userName"
+      FROM stock_movements m
+      JOIN products p ON p.id = m.product_id
+      LEFT JOIN suppliers s ON s.id = m.supplier_id
+      LEFT JOIN users u ON u.id = m.user_id
+      ORDER BY m.created_at DESC, m.id DESC
+      LIMIT 300
+    `;
     return NextResponse.json({ movements });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("does not exist")) {
-      return NextResponse.json(
-        { error: "Migration manquante : exécutez db/0002_stock.sql dans Neon." },
-        { status: 500 }
-      );
-    }
-    return NextResponse.json({ error: "Erreur serveur." }, { status: 500 });
+  } catch {
+    return serverError();
   }
 }
 
+/** Chaque mouvement modifie le stock et s'enregistre dans une seule instruction SQL atomique. */
 export async function POST(request: Request) {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Corps JSON invalide." }, { status: 400 });
-  }
-  const parsed = movementSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Données invalides." },
-      { status: 400 }
-    );
-  }
-  const { productId, type, quantity, note } = parsed.data;
-
-  // Entrées / sorties : magasinier et au-dessus. Ajustement d'inventaire : gestionnaire et au-dessus.
-  const auth = await authorize(request, type === "adjustment" ? STOCK_MANAGERS : STOCK_WRITERS);
+  const auth = await authorize(request, rolesFor("movements.write"));
   if ("error" in auth) return auth.error;
+  const body = await parseBody(request, movementSchema);
+  if ("error" in body) return body.error;
+  const { productId, type, quantity, note, supplierId } = body.data;
+  const text = note?.trim() ? note.trim() : null;
+  const supplier = type === "in" ? supplierId ?? null : null;
 
   try {
-    const result = await applyMovement(getSql(), {
-      productId, type, quantity, note: note || null, userId: auth.user.id
-    });
-    if (!result.ok) {
-      const messages = {
-        not_found: ["Produit introuvable ou archivé.", 404],
-        insufficient: [`Stock insuffisant : ${result.available ?? 0} unité(s) disponible(s).`, 409],
-        limit: ["La quantité totale dépasserait la limite autorisée.", 409],
-        no_change: [`La quantité comptée est identique au stock actuel (${result.available ?? 0}).`, 409]
-      } as const;
-      const [error, status] = messages[result.reason];
-      return NextResponse.json({ error }, { status });
+    const sql = getSql();
+    let rows;
+    if (type === "in") {
+      rows = await sql`
+        WITH upd AS (
+          UPDATE products SET quantity = quantity + ${quantity}::int, updated_at = NOW()
+          WHERE id = ${productId} AND archived = FALSE RETURNING id, quantity
+        ), ins AS (
+          INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id, supplier_id)
+          SELECT id, 'in', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint, ${supplier}::bigint FROM upd
+          RETURNING id
+        )
+        SELECT (SELECT quantity FROM upd) AS quantity, (SELECT id FROM ins) AS "movementId"
+      `;
+    } else if (type === "out") {
+      rows = await sql`
+        WITH upd AS (
+          UPDATE products SET quantity = quantity - ${quantity}::int, updated_at = NOW()
+          WHERE id = ${productId} AND archived = FALSE AND quantity >= ${quantity}::int RETURNING id, quantity
+        ), ins AS (
+          INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
+          SELECT id, 'out', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint FROM upd
+          RETURNING id
+        )
+        SELECT (SELECT quantity FROM upd) AS quantity, (SELECT id FROM ins) AS "movementId"
+      `;
+    } else {
+      rows = await sql`
+        WITH cur AS (
+          SELECT id, quantity AS old FROM products WHERE id = ${productId} AND archived = FALSE FOR UPDATE
+        ), upd AS (
+          UPDATE products p SET quantity = ${quantity}::int, updated_at = NOW()
+          FROM cur WHERE p.id = cur.id AND cur.old <> ${quantity}::int
+          RETURNING p.id, p.quantity, cur.old
+        ), ins AS (
+          INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
+          SELECT id, 'adjustment', ABS(quantity - old),
+                 'Inventaire : ' || old || ' → ' || quantity || COALESCE(' — ' || ${text}::text, ''),
+                 ${auth.user.id}::bigint
+          FROM upd RETURNING id
+        )
+        SELECT (SELECT quantity FROM upd) AS quantity, (SELECT id FROM ins) AS "movementId"
+      `;
     }
-    await logAudit(auth.user.id, "stock_movement", "product", productId, `${type}:${quantity}`);
-    return NextResponse.json({ movement: result.movement }, { status: 201 });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (message.includes("does not exist")) {
-      return NextResponse.json(
-        { error: "Migration manquante : exécutez db/0002_stock.sql dans Neon." },
-        { status: 500 }
-      );
+    if (rows[0]?.movementId == null) {
+      if (type === "out") return fail("Stock insuffisant ou produit introuvable.", 409);
+      if (type === "adjustment") return fail("Le stock compté est identique au stock actuel, ou le produit est introuvable.", 409);
+      return fail("Produit introuvable.", 404);
     }
-    return NextResponse.json({ error: "Impossible d’enregistrer le mouvement." }, { status: 500 });
+    await logAudit(auth.user.id, `movement_${type}`, "product", productId, String(quantity));
+    return NextResponse.json({ ok: true, quantity: rows[0].quantity }, { status: 201 });
+  } catch {
+    return serverError("Impossible d’enregistrer le mouvement.");
   }
 }

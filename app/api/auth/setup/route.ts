@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
-import { clientIp, hashPassword, isIpThrottled, logAudit, recordFailedAttempt } from "@/lib/auth";
+import { hashPassword, logAudit } from "@/lib/auth";
 import { setupSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -15,11 +15,6 @@ export async function POST(request: Request) {
   const setupKey = process.env.SETUP_KEY;
   if (!setupKey) {
     return NextResponse.json({ error: "Configuration initiale désactivée." }, { status: 403 });
-  }
-
-  const ip = clientIp(request);
-  if (await isIpThrottled(ip)) {
-    return NextResponse.json({ error: "Trop de tentatives. Réessayez plus tard." }, { status: 429 });
   }
 
   let body: unknown;
@@ -36,7 +31,6 @@ export async function POST(request: Request) {
     );
   }
   if (!timingSafeEqual(digest(parsed.data.setupKey), digest(setupKey))) {
-    await recordFailedAttempt(ip);
     return NextResponse.json({ error: "Clé de configuration invalide." }, { status: 403 });
   }
 

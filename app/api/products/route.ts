@@ -1,68 +1,56 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
-import { STOCK_MANAGERS, STOCK_WRITERS, authorize, logAudit } from "@/lib/auth";
-import { createProduct, listProducts } from "@/lib/stock";
+import { authorize, logAudit } from "@/lib/auth";
+import { rolesFor } from "@/lib/roles";
+import { fail, isUnique, parseBody, serverError } from "@/lib/api";
 import { productInputSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
 
-function dbError(error: unknown, fallback: string) {
-  const message = error instanceof Error ? error.message : "";
-  if (message.includes("DATABASE_URL")) {
-    return NextResponse.json({ error: "Base de données non configurée." }, { status: 503 });
-  }
-  if (message.includes("archived") && message.includes("does not exist")) {
-    return NextResponse.json(
-      { error: "Migration manquante : exécutez db/0002_stock.sql dans Neon." },
-      { status: 500 }
-    );
-  }
-  return NextResponse.json({ error: fallback }, { status: 500 });
-}
-
 export async function GET(request: Request) {
-  const wantsArchived = new URL(request.url).searchParams.get("archived") === "1";
-  const auth = await authorize(request, wantsArchived ? STOCK_MANAGERS : undefined);
+  const auth = await authorize(request);
   if ("error" in auth) return auth.error;
   try {
-    const products = await listProducts(getSql(), wantsArchived);
-    return NextResponse.json({ products });
-  } catch (error) {
-    return dbError(error, "Erreur serveur.");
+    const sql = getSql();
+    const rows = await sql`
+      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
+             min_quantity AS "minQuantity", created_at AS "createdAt"
+      FROM products WHERE archived = FALSE
+      ORDER BY name ASC LIMIT 1000
+    `;
+    return NextResponse.json({ products: rows });
+  } catch {
+    return serverError();
   }
 }
 
 export async function POST(request: Request) {
-  const auth = await authorize(request, STOCK_WRITERS);
+  const auth = await authorize(request, rolesFor("products.write"));
   if ("error" in auth) return auth.error;
-
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Corps JSON invalide." }, { status: 400 });
-  }
-
-  const parsed = productInputSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Données invalides." },
-      { status: 400 }
-    );
-  }
+  const body = await parseBody(request, productInputSchema);
+  if ("error" in body) return body.error;
+  const { sku, name, category, quantity, unitPrice, minQuantity } = body.data;
 
   try {
-    const { sku, name, category, quantity, unitPrice, minQuantity } = parsed.data;
-    const product = await createProduct(getSql(), {
-      sku, name, category: category || "Général", quantity, unitPrice, minQuantity, userId: auth.user.id
-    });
-    await logAudit(auth.user.id, "product_create", "product", Number(product.id), sku);
-    return NextResponse.json({ product }, { status: 201 });
+    const sql = getSql();
+    const rows = await sql`
+      WITH p AS (
+        INSERT INTO products (sku, name, category, quantity, unit_price, min_quantity)
+        VALUES (${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity})
+        RETURNING id, sku, name, category, quantity, unit_price, min_quantity, created_at
+      ), m AS (
+        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
+        SELECT id, 'in', quantity, 'Stock initial', ${auth.user.id}::bigint FROM p WHERE quantity > 0
+        RETURNING 1
+      )
+      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
+             min_quantity AS "minQuantity", created_at AS "createdAt"
+      FROM p
+    `;
+    await logAudit(auth.user.id, "product_create", "product", Number(rows[0].id), sku);
+    return NextResponse.json({ product: rows[0] }, { status: 201 });
   } catch (error) {
-    const message = error instanceof Error ? error.message.toLowerCase() : "";
-    if (message.includes("unique") || message.includes("duplicate")) {
-      return NextResponse.json({ error: "Cette référence existe déjà." }, { status: 409 });
-    }
-    return dbError(error, "Impossible d’enregistrer le produit.");
+    if (isUnique(error)) return fail("Cette référence existe déjà.", 409);
+    return serverError("Impossible d’enregistrer le produit.");
   }
 }

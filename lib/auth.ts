@@ -2,12 +2,18 @@ import { createHmac, randomBytes, scrypt as scryptCallback, timingSafeEqual } fr
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
-import { isRole, type Role } from "@/lib/roles";
+import { ROLES, ROLE_LABELS, isRole, type Role } from "@/lib/roles";
 
-export {
-  ROLES, ROLE_LABELS, STOCK_MANAGERS, STOCK_WRITERS, canManageRole, isRole, roleRank
-} from "@/lib/roles";
-export type { Role } from "@/lib/roles";
+export { ROLES, ROLE_LABELS, isRole };
+export type { Role };
+
+const ROLE_RANK: Record<Role, number> = {
+  super_admin: 4,
+  admin: 3,
+  manager: 2,
+  storekeeper: 1,
+  seller: 0
+};
 
 export const SESSION_COOKIE = "gs_session";
 const SESSION_SECONDS = 60 * 60 * 8;
@@ -18,6 +24,18 @@ export type SessionUser = {
   name: string;
   role: Role;
 };
+
+
+export function roleRank(role: Role) {
+  return ROLE_RANK[role];
+}
+
+/** Un utilisateur peut gérer uniquement des rôles strictement inférieurs, sauf le super administrateur. */
+export function canManageRole(actor: Role, target: Role) {
+  if (actor === "super_admin") return true;
+  if (actor !== "admin") return false;
+  return ROLE_RANK[target] < ROLE_RANK[actor];
+}
 
 function scryptAsync(password: string, salt: Buffer, keyLength: number) {
   return new Promise<Buffer>((resolve, reject) => {
@@ -156,35 +174,11 @@ export async function logAudit(
   }
 }
 
-/** Adresse IP du client (Vercel renseigne ces en-têtes). */
-export function clientIp(request: Request) {
-  const forwarded = request.headers.get("x-vercel-forwarded-for") ?? request.headers.get("x-forwarded-for");
-  const ip = forwarded?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "unknown";
-  return ip.slice(0, 64);
-}
-
-const MAX_IP_FAILURES = 20;
-
-/** Trop d'échecs de connexion depuis la même adresse IP sur 15 minutes ? (en cas d'erreur SQL, on ne bloque pas) */
-export async function isIpThrottled(ip: string) {
+export async function hasUsers() {
   try {
-    const sql = getSql();
-    const rows = await sql`
-      SELECT COUNT(*)::int AS count FROM login_attempts
-      WHERE ip = ${ip} AND created_at > NOW() - INTERVAL '15 minutes'
-    `;
-    return Number(rows[0]?.count) >= MAX_IP_FAILURES;
+    const rows = await getSql()`SELECT COUNT(*)::int AS count FROM users`;
+    return Number(rows[0]?.count) > 0;
   } catch {
-    return false;
-  }
-}
-
-export async function recordFailedAttempt(ip: string) {
-  try {
-    const sql = getSql();
-    await sql`INSERT INTO login_attempts (ip) VALUES (${ip})`;
-    await sql`DELETE FROM login_attempts WHERE created_at < NOW() - INTERVAL '1 day'`;
-  } catch {
-    // Migration 0002 pas encore exécutée : on ignore.
+    return true;
   }
 }

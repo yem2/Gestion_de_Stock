@@ -1,49 +1,58 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
-import { STOCK_MANAGERS, authorize, logAudit } from "@/lib/auth";
-import { updateProduct } from "@/lib/stock";
+import { authorize, logAudit } from "@/lib/auth";
+import { rolesFor } from "@/lib/roles";
+import { fail, isUnique, parseBody, parseId, serverError } from "@/lib/api";
 import { productUpdateSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
 
-/** Modifier un produit ou l'archiver / le restaurer (réservé aux gestionnaires et administrateurs). */
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
-  const auth = await authorize(request, STOCK_MANAGERS);
+type Context = { params: Promise<{ id: string }> };
+
+export async function PATCH(request: Request, context: Context) {
+  const auth = await authorize(request, rolesFor("products.write"));
   if ("error" in auth) return auth.error;
-
-  const { id } = await context.params;
-  const productId = Number(id);
-  if (!Number.isInteger(productId) || productId <= 0) {
-    return NextResponse.json({ error: "Identifiant invalide." }, { status: 400 });
-  }
-
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Corps JSON invalide." }, { status: 400 });
-  }
-  const parsed = productUpdateSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: parsed.error.issues[0]?.message ?? "Données invalides." },
-      { status: 400 }
-    );
-  }
-  const changes = { ...parsed.data };
-  if (changes.category !== undefined && changes.category === "") changes.category = "Général";
+  const id = parseId((await context.params).id);
+  if (!id) return fail("Identifiant invalide.");
+  const body = await parseBody(request, productUpdateSchema);
+  if ("error" in body) return body.error;
+  const d = body.data;
 
   try {
-    const product = await updateProduct(getSql(), productId, changes);
-    if (!product) return NextResponse.json({ error: "Produit introuvable." }, { status: 404 });
-    const action = changes.archived === undefined ? "product_update" : changes.archived ? "product_archive" : "product_restore";
-    await logAudit(auth.user.id, action, "product", productId, Object.keys(changes).join(","));
-    return NextResponse.json({ product });
+    const sql = getSql();
+    const rows = await sql`
+      UPDATE products SET
+        sku = COALESCE(${d.sku ?? null}::text, sku),
+        name = COALESCE(${d.name ?? null}::text, name),
+        category = COALESCE(${d.category ?? null}::text, category),
+        unit_price = COALESCE(${d.unitPrice ?? null}::numeric, unit_price),
+        min_quantity = COALESCE(${d.minQuantity ?? null}::int, min_quantity),
+        updated_at = NOW()
+      WHERE id = ${id} AND archived = FALSE
+      RETURNING id, sku, name, category, quantity, unit_price AS "unitPrice", min_quantity AS "minQuantity"
+    `;
+    if (!rows[0]) return fail("Produit introuvable.", 404);
+    await logAudit(auth.user.id, "product_update", "product", id);
+    return NextResponse.json({ product: rows[0] });
   } catch (error) {
-    const message = error instanceof Error ? error.message.toLowerCase() : "";
-    if (message.includes("unique") || message.includes("duplicate")) {
-      return NextResponse.json({ error: "Cette référence existe déjà." }, { status: 409 });
-    }
-    return NextResponse.json({ error: "Impossible de modifier le produit." }, { status: 500 });
+    if (isUnique(error)) return fail("Cette référence existe déjà.", 409);
+    return serverError("Impossible de modifier le produit.");
+  }
+}
+
+/** Archivage : le produit disparaît des listes mais l'historique des mouvements et ventes est conservé. */
+export async function DELETE(request: Request, context: Context) {
+  const auth = await authorize(request, rolesFor("products.archive"));
+  if ("error" in auth) return auth.error;
+  const id = parseId((await context.params).id);
+  if (!id) return fail("Identifiant invalide.");
+  try {
+    const sql = getSql();
+    const rows = await sql`UPDATE products SET archived = TRUE, updated_at = NOW() WHERE id = ${id} AND archived = FALSE RETURNING id`;
+    if (!rows[0]) return fail("Produit introuvable.", 404);
+    await logAudit(auth.user.id, "product_archive", "product", id);
+    return NextResponse.json({ ok: true });
+  } catch {
+    return serverError("Impossible d’archiver le produit.");
   }
 }
