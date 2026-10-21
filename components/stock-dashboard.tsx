@@ -1,3 +1,3 @@
-// Ancien tableau de bord (v0.4), remplacé par app/page.tsx et les fichiers components/*-view.tsx.
-// Ce fichier est volontairement vide pour que la compilation passe ; il peut être supprimé du dépôt.
+// Fichier obsolète (ancienne interface en une seule page, remplacée par une page par module).
+// Vous pouvez le supprimer du dépôt. Il est neutralisé ici pour ne plus casser le build Vercel.
 export {};

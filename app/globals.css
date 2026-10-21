@@ -206,6 +206,9 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
 .link-box{display:flex;gap:8px;align-items:stretch}
 .link-box input{flex:1;min-width:0;font-size:.85rem}
 
-/* Lignes d'une commande fournisseur */
-.purchase-line{display:grid;gap:8px;grid-template-columns:minmax(0,1fr) 80px 110px 40px;align-items:center;margin-bottom:8px}
-@media (max-width:479px){.purchase-line{grid-template-columns:minmax(0,1fr) 64px 84px 36px}}
+/* Écrans tactiles : zones de toucher d'au moins 44 px */
+@media (pointer:coarse){
+  .btn-sm{min-height:44px;padding:0 14px}
+  .icon-btn{width:44px;height:44px}
+  .auth-link{padding:12px 6px}
+}

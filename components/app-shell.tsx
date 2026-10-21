@@ -4,8 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
-  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, X
+  Boxes, ChartNoAxesCombined, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
+  ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, X
 } from "lucide-react";
 import { can, type Permission, type Role } from "@/lib/roles";
 
@@ -16,25 +16,21 @@ const NAV: { href: string; label: string; icon: typeof Package; permission?: Per
   { href: "/produits", label: "Produits", icon: Package },
   { href: "/mouvements", label: "Mouvements", icon: ArrowLeftRight, permission: "movements.view" },
   { href: "/ventes", label: "Ventes", icon: ShoppingCart, permission: "sales.view" },
-  { href: "/achats", label: "Achats", icon: ClipboardList, permission: "purchases.view" },
   { href: "/clients", label: "Clients", icon: Users, permission: "customers.view" },
   { href: "/fournisseurs", label: "Fournisseurs", icon: Truck, permission: "suppliers.view" },
   { href: "/rapports", label: "Rapports", icon: ChartNoAxesCombined, permission: "reports.view" },
-  { href: "/utilisateurs", label: "Utilisateurs", icon: ShieldCheck, permission: "users.manage" },
-  { href: "/journal", label: "Journal", icon: History, permission: "audit.view" },
-  { href: "/parametres", label: "Paramètres", icon: Settings }
+  { href: "/utilisateurs", label: "Utilisateurs", icon: ShieldCheck, permission: "users.manage" }
 ];
 
 export default function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {
   const pathname = usePathname();
-  const [open, setOpen] = useState(false);
+  // Le menu mobile se referme tout seul à chaque changement de page (l'état est lié au chemin courant).
+  const [openPath, setOpenPath] = useState<string | null>(null);
+  const open = openPath === pathname;
+  const setOpen = (value: boolean) => setOpenPath(value ? pathname : null);
   const items = NAV.filter((item) => !item.permission || can(user.role, item.permission));
   const current = items.find((item) => (item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)));
   const initials = user.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "U";
-
-  useEffect(() => {
-    setOpen(false);
-  }, [pathname]);
 
   useEffect(() => {
     document.body.classList.toggle("no-scroll", open);
