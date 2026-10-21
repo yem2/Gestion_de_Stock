@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 import { hashPassword, logAudit } from "@/lib/auth";
 import { setupSchema } from "@/lib/validation";
+import { RBAC_ROLE_NAMES } from "@/lib/roles";
 
 export const runtime = "nodejs";
 
@@ -42,9 +43,20 @@ export async function POST(request: Request) {
     }
     const passwordHash = await hashPassword(parsed.data.password);
     const rows = await sql`
-      INSERT INTO users (email, name, password_hash, role)
-      VALUES (${parsed.data.email}, ${parsed.data.name}, ${passwordHash}, 'super_admin')
-      RETURNING id
+      WITH u AS (
+        INSERT INTO users (email, name, password_hash, role)
+        VALUES (${parsed.data.email}, ${parsed.data.name}, ${passwordHash}, 'super_admin')
+        RETURNING id
+      ), m AS (
+        INSERT INTO company_memberships (company_id, user_id)
+        SELECT c.id, u.id FROM companies c, u WHERE c.slug = 'default'
+        RETURNING id, company_id
+      ), mr AS (
+        INSERT INTO membership_roles (company_id, membership_id, role_id)
+        SELECT m.company_id, m.id, r.id FROM m JOIN roles r ON r.company_id = m.company_id AND r.name = ${RBAC_ROLE_NAMES.super_admin}
+        RETURNING 1
+      )
+      SELECT id FROM u
     `;
     await logAudit(Number(rows[0].id), "setup_super_admin", "user", Number(rows[0].id));
     return NextResponse.json({ ok: true }, { status: 201 });

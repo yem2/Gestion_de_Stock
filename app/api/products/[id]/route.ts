@@ -28,7 +28,7 @@ export async function PATCH(request: Request, context: Context) {
         unit_price = COALESCE(${d.unitPrice ?? null}::numeric, unit_price),
         min_quantity = COALESCE(${d.minQuantity ?? null}::int, min_quantity),
         updated_at = NOW()
-      WHERE id = ${id} AND archived = FALSE
+      WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE
       RETURNING id, sku, name, category, quantity, unit_price AS "unitPrice", min_quantity AS "minQuantity"
     `;
     if (!rows[0]) return fail("Produit introuvable.", 404);
@@ -48,7 +48,7 @@ export async function DELETE(request: Request, context: Context) {
   if (!id) return fail("Identifiant invalide.");
   try {
     const sql = getSql();
-    const rows = await sql`UPDATE products SET archived = TRUE, updated_at = NOW() WHERE id = ${id} AND archived = FALSE RETURNING id`;
+    const rows = await sql`UPDATE products SET archived = TRUE, updated_at = NOW() WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE RETURNING id`;
     if (!rows[0]) return fail("Produit introuvable.", 404);
     await logAudit(auth.user.id, "product_archive", "product", id);
     return NextResponse.json({ ok: true });

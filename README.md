@@ -28,7 +28,7 @@ Charte graphique : rouge et noir, comme OCTOPLUS.
 2. Installe les dépendances : `npm install`
 3. Copie `.env.example` vers `.env.local`.
 4. Crée une base de données **distincte** dans Neon et place son URL dans `DATABASE_URL`.
-5. Exécute le SQL de `db/0000_initial_schema.sql`, `db/0001_auth.sql` puis `db/0002_modules.sql`, `db/0003_password_reset.sql` puis `db/0004_purchases_settings.sql` dans le SQL Editor de cette base Neon.
+5. Exécute le SQL de `db/0000_initial_schema.sql`, `db/0001_auth.sql` puis `db/0002_modules.sql`, `db/0003_password_reset.sql` puis `db/0004_purchases_settings.sql` dans le SQL Editor de cette base Neon, puis les migrations multi-entreprises décrites plus bas (0005 à 0009).
 6. Lance `npm run dev`, puis ouvre `http://localhost:3000`.
 
 Sans `DATABASE_URL` et la migration, l'interface s'affiche mais les données et l'ajout de produits ne fonctionnent pas.
@@ -86,3 +86,22 @@ L'interface s'adapte aux téléphones, tablettes et ordinateurs : menu latéral 
 - **Achats** : commandes aux fournisseurs (articles, quantités, coût unitaire). « Réceptionner » passe la commande à *reçue*, augmente le stock et trace les entrées dans la même requête SQL ; une commande ne peut être reçue qu'une fois. Annulation possible tant qu'elle n'est pas reçue.
 - **Journal d'activité** (administrateurs) : les 300 dernières actions (connexions, produits, ventes, achats, exports, paramètres…) avec filtre.
 - **Paramètres** : changement de son propre mot de passe (ancien mot de passe exigé, autres sessions fermées) et informations de l'entreprise (nom, adresse, téléphone, message) reprises sur les reçus de vente.
+
+
+## Multi-entreprises (cahier des charges, phases 02 et 03)
+
+Chaque donnée métier appartient à une entreprise (`company_id`). La session contient l'entreprise active (`companyId`) et **toutes les requêtes l'utilisent** : ne jamais lire `company_id` depuis le navigateur.
+
+Ordre d'application sur la base (idéalement d'abord sur une branche Neon de test) :
+
+1. `db/0005_multi_company_rbac.sql` : entreprises, rôles, permissions, appartenances, `company_id` et contraintes inter-entreprises.
+2. `db/0006_warehouses_balances.sql` : entrepôts, unités, catégories, `stock_balances`.
+3. `db/0007_sync_triggers.sql` : synchronise `stock_balances` avec `products.quantity` (entrepôt par défaut).
+4. `db/0009_settings_to_company.sql` : paramètres propres à chaque entreprise.
+5. Déployer ce code, puis exécuter `db/0008_drop_transitional_defaults.sql` (retire le `company_id` par défaut transitoire).
+
+Vérification : `DATABASE_URL=... node scripts/check-isolation.mjs` (sur une branche de test uniquement).
+
+Connexions et performances : les requêtes passent par le pilote HTTP Neon (aucune connexion persistante). Utiliser l'URL **pooler** de Neon dans `DATABASE_URL` et placer les fonctions Vercel dans la région la plus proche de la base.
+
+Limites actuelles : un seul entrepôt par entreprise est exploité par l'interface, la session prend la première entreprise active de l'utilisateur, et les permissions restent celles de `lib/roles.ts` (les tables RBAC sont alimentées mais pas encore lues).

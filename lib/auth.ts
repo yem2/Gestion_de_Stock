@@ -23,6 +23,8 @@ export type SessionUser = {
   email: string;
   name: string;
   role: Role;
+  /** Entreprise active de la session (appartenance active). Toutes les requêtes métier doivent la filtrer. */
+  companyId: string;
 };
 
 
@@ -114,13 +116,22 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     const parsed = parseToken(token);
     if (!parsed) return null;
     const sql = getSql();
+    // Une seule requête : utilisateur + entreprise active (appartenance active, entreprise active).
     const rows = await sql`
-      SELECT id, email, name, role, active, token_version AS "tokenVersion"
-      FROM users WHERE id = ${parsed.userId}
+      SELECT u.id, u.email, u.name, u.role, u.active, u.token_version AS "tokenVersion", m.company_id AS "companyId"
+      FROM users u
+      JOIN company_memberships m ON m.user_id = u.id AND m.status = 'active'
+      JOIN companies c ON c.id = m.company_id AND c.status = 'active'
+      WHERE u.id = ${parsed.userId}
+      ORDER BY m.created_at ASC
+      LIMIT 1
     `;
     const row = rows[0];
     if (!row || !row.active || row.tokenVersion !== parsed.tokenVersion || !isRole(row.role)) return null;
-    return { id: Number(row.id), email: String(row.email), name: String(row.name), role: row.role };
+    return {
+      id: Number(row.id), email: String(row.email), name: String(row.name), role: row.role,
+      companyId: String(row.companyId)
+    };
   } catch {
     return null;
   }
@@ -166,8 +177,11 @@ export async function logAudit(
   try {
     const sql = getSql();
     await sql`
-      INSERT INTO audit_log (user_id, action, entity, entity_id, detail)
-      VALUES (${userId}, ${action}, ${entity ?? null}, ${entityId === undefined ? null : String(entityId)}, ${detail ?? null})
+      INSERT INTO audit_log (company_id, user_id, action, entity, entity_id, detail)
+      VALUES (
+        (SELECT company_id FROM company_memberships WHERE user_id = ${userId}::bigint AND status = 'active' ORDER BY created_at ASC LIMIT 1),
+        ${userId}, ${action}, ${entity ?? null}, ${entityId === undefined ? null : String(entityId)}, ${detail ?? null}
+      )
     `;
   } catch {
     // Le journal ne doit jamais bloquer l'action principale.

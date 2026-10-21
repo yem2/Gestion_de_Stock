@@ -20,44 +20,45 @@ export async function GET(request: Request) {
         SELECT COUNT(*)::int AS "productCount", COALESCE(SUM(quantity), 0)::int AS units,
                COALESCE(SUM(quantity * unit_price), 0) AS value,
                COUNT(*) FILTER (WHERE quantity <= min_quantity)::int AS "lowCount"
-        FROM products WHERE archived = FALSE
+        FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE
       `,
       sql`
         SELECT COALESCE(SUM(total_amount), 0) AS total, COUNT(*)::int AS count
-        FROM sales WHERE status = 'completed'
+        FROM sales WHERE company_id = ${auth.user.companyId}::uuid AND status = 'completed'
           AND (created_at AT TIME ZONE ${TZ})::date = (NOW() AT TIME ZONE ${TZ})::date
       `,
       sql`
         SELECT COALESCE(SUM(total_amount), 0) AS total, COUNT(*)::int AS count
-        FROM sales WHERE status = 'completed' AND created_at >= NOW() - (${days}::int * INTERVAL '1 day')
+        FROM sales WHERE company_id = ${auth.user.companyId}::uuid AND status = 'completed' AND created_at >= NOW() - (${days}::int * INTERVAL '1 day')
       `,
       sql`
         SELECT to_char(d.day, 'YYYY-MM-DD') AS day, COALESCE(SUM(s.total_amount), 0) AS total
         FROM generate_series(
           ((NOW() AT TIME ZONE ${TZ})::date - (${days}::int - 1)), (NOW() AT TIME ZONE ${TZ})::date, INTERVAL '1 day'
         ) AS d(day)
-        LEFT JOIN sales s ON s.status = 'completed' AND (s.created_at AT TIME ZONE ${TZ})::date = d.day::date
+        LEFT JOIN sales s ON s.company_id = ${auth.user.companyId}::uuid AND s.status = 'completed' AND (s.created_at AT TIME ZONE ${TZ})::date = d.day::date
         GROUP BY d.day ORDER BY d.day
       `,
       sql`
         SELECT payment_method AS method, COALESCE(SUM(total_amount), 0) AS total, COUNT(*)::int AS count
-        FROM sales WHERE status = 'completed' AND created_at >= NOW() - (${days}::int * INTERVAL '1 day')
+        FROM sales WHERE company_id = ${auth.user.companyId}::uuid AND status = 'completed' AND created_at >= NOW() - (${days}::int * INTERVAL '1 day')
         GROUP BY payment_method ORDER BY total DESC
       `,
       sql`
         SELECT p.name, SUM(i.quantity)::int AS quantity, SUM(i.quantity * i.unit_price) AS total
         FROM sale_items i JOIN sales s ON s.id = i.sale_id JOIN products p ON p.id = i.product_id
-        WHERE s.status = 'completed' AND s.created_at >= NOW() - (${days}::int * INTERVAL '1 day')
+        WHERE s.company_id = ${auth.user.companyId}::uuid AND s.status = 'completed' AND s.created_at >= NOW() - (${days}::int * INTERVAL '1 day')
         GROUP BY p.id, p.name ORDER BY total DESC LIMIT 5
       `,
       sql`
         SELECT id, name, sku, quantity, min_quantity AS "minQuantity"
-        FROM products WHERE archived = FALSE AND quantity <= min_quantity
+        FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE AND quantity <= min_quantity
         ORDER BY quantity ASC, name ASC LIMIT 8
       `,
       sql`
         SELECT m.id, m.movement_type AS type, m.quantity, m.created_at AS "createdAt", p.name AS "productName"
         FROM stock_movements m JOIN products p ON p.id = m.product_id
+        WHERE m.company_id = ${auth.user.companyId}::uuid
         ORDER BY m.created_at DESC, m.id DESC LIMIT 6
       `
     ]);

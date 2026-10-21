@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 import { authorize, canManageRole, hashPassword, logAudit } from "@/lib/auth";
 import { userCreateSchema } from "@/lib/validation";
+import { RBAC_ROLE_NAMES } from "@/lib/roles";
 
 export const runtime = "nodejs";
 
@@ -13,8 +14,9 @@ export async function GET(request: Request) {
   try {
     const sql = getSql();
     const users = await sql`
-      SELECT id, email, name, role, active, last_login_at AS "lastLoginAt", created_at AS "createdAt"
-      FROM users ORDER BY created_at ASC LIMIT 500
+      SELECT u.id, u.email, u.name, u.role, u.active, u.last_login_at AS "lastLoginAt", u.created_at AS "createdAt"
+      FROM users u JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ${auth.user.companyId}::uuid
+      ORDER BY u.created_at ASC LIMIT 500
     `;
     return NextResponse.json({ users });
   } catch {
@@ -47,9 +49,19 @@ export async function POST(request: Request) {
     const sql = getSql();
     const passwordHash = await hashPassword(parsed.data.password);
     const rows = await sql`
-      INSERT INTO users (email, name, password_hash, role)
-      VALUES (${parsed.data.email}, ${parsed.data.name}, ${passwordHash}, ${parsed.data.role})
-      RETURNING id, email, name, role, active, created_at AS "createdAt"
+      WITH u AS (
+        INSERT INTO users (email, name, password_hash, role)
+        VALUES (${parsed.data.email}, ${parsed.data.name}, ${passwordHash}, ${parsed.data.role})
+        RETURNING id, email, name, role, active, created_at
+      ), m AS (
+        INSERT INTO company_memberships (company_id, user_id) SELECT ${auth.user.companyId}::uuid, u.id FROM u
+        RETURNING id, company_id
+      ), mr AS (
+        INSERT INTO membership_roles (company_id, membership_id, role_id)
+        SELECT m.company_id, m.id, r.id FROM m JOIN roles r ON r.company_id = m.company_id AND r.name = ${RBAC_ROLE_NAMES[parsed.data.role]}
+        RETURNING 1
+      )
+      SELECT id, email, name, role, active, created_at AS "createdAt" FROM u
     `;
     await logAudit(auth.user.id, "user_create", "user", Number(rows[0].id), parsed.data.role);
     return NextResponse.json({ user: rows[0] }, { status: 201 });

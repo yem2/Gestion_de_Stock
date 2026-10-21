@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     const rows = await sql`
       SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
              min_quantity AS "minQuantity", created_at AS "createdAt"
-      FROM products WHERE archived = FALSE
+      FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE
       ORDER BY name ASC LIMIT 1000
     `;
     return NextResponse.json({ products: rows });
@@ -35,12 +35,12 @@ export async function POST(request: Request) {
     const sql = getSql();
     const rows = await sql`
       WITH p AS (
-        INSERT INTO products (sku, name, category, quantity, unit_price, min_quantity)
-        VALUES (${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity})
-        RETURNING id, sku, name, category, quantity, unit_price, min_quantity, created_at
+        INSERT INTO products (company_id, sku, name, category, quantity, unit_price, min_quantity)
+        VALUES (${auth.user.companyId}::uuid, ${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity})
+        RETURNING id, company_id, sku, name, category, quantity, unit_price, min_quantity, created_at
       ), m AS (
-        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
-        SELECT id, 'in', quantity, 'Stock initial', ${auth.user.id}::bigint FROM p WHERE quantity > 0
+        INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
+        SELECT company_id, id, 'in', quantity, 'Stock initial', ${auth.user.id}::bigint FROM p WHERE quantity > 0
         RETURNING 1
       )
       SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",

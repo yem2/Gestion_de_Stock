@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 import { authorize, logAudit } from "@/lib/auth";
 import { rolesFor } from "@/lib/roles";
-import { fail, parseBody, serverError } from "@/lib/api";
+import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
 import { saleSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -19,6 +19,7 @@ export async function GET(request: Request) {
       FROM sales s
       LEFT JOIN customers c ON c.id = s.customer_id
       LEFT JOIN users u ON u.id = s.user_id
+      WHERE s.company_id = ${auth.user.companyId}::uuid
       ORDER BY s.created_at DESC, s.id DESC
       LIMIT 300
     `;
@@ -51,13 +52,13 @@ export async function POST(request: Request) {
       ), locked AS (
         SELECT p.id, p.unit_price, p.quantity, a.qty
         FROM products p JOIN agg a ON a.product_id = p.id
-        WHERE p.archived = FALSE FOR UPDATE OF p
+        WHERE p.archived = FALSE AND p.company_id = ${auth.user.companyId}::uuid FOR UPDATE OF p
       ), ok AS (
         SELECT ((SELECT COUNT(*) FROM locked) = (SELECT COUNT(*) FROM agg)
                 AND NOT EXISTS (SELECT 1 FROM locked WHERE quantity < qty)) AS good
       ), sale AS (
-        INSERT INTO sales (customer_id, status, total_amount, user_id, payment_method)
-        SELECT ${customerId ?? null}::bigint, 'completed',
+        INSERT INTO sales (company_id, customer_id, status, total_amount, user_id, payment_method)
+        SELECT ${auth.user.companyId}::uuid, ${customerId ?? null}::bigint, 'completed',
                COALESCE((SELECT SUM(unit_price * qty) FROM locked), 0),
                ${auth.user.id}::bigint, ${paymentMethod}::text
         WHERE (SELECT good FROM ok)
@@ -71,8 +72,8 @@ export async function POST(request: Request) {
         FROM locked l WHERE p.id = l.id AND EXISTS (SELECT 1 FROM sale)
         RETURNING p.id, l.qty
       ), mov AS (
-        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
-        SELECT id, 'out', qty, 'Vente #' || (SELECT id FROM sale), ${auth.user.id}::bigint FROM dec
+        INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
+        SELECT ${auth.user.companyId}::uuid, id, 'out', qty, 'Vente #' || (SELECT id FROM sale), ${auth.user.id}::bigint FROM dec
         RETURNING 1
       )
       SELECT (SELECT id FROM sale) AS id, (SELECT total_amount FROM sale) AS total
@@ -82,7 +83,8 @@ export async function POST(request: Request) {
     }
     await logAudit(auth.user.id, "sale_create", "sale", Number(rows[0].id), String(rows[0].total));
     return NextResponse.json({ sale: { id: rows[0].id, total: rows[0].total } }, { status: 201 });
-  } catch {
+  } catch (error) {
+    if (isForeignKey(error)) return fail("Client invalide.", 400);
     return serverError("Impossible d’enregistrer la vente.");
   }
 }

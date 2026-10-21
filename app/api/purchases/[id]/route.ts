@@ -19,7 +19,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       FROM purchase_orders o
       LEFT JOIN suppliers s ON s.id = o.supplier_id
       LEFT JOIN users u ON u.id = o.user_id
-      WHERE o.id = ${id}
+      WHERE o.id = ${id} AND o.company_id = ${auth.user.companyId}::uuid
     `;
     if (!orders[0]) return fail("Commande introuvable.", 404);
     const items = await sql`

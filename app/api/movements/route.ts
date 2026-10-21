@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 import { authorize, logAudit } from "@/lib/auth";
 import { rolesFor } from "@/lib/roles";
-import { fail, parseBody, serverError } from "@/lib/api";
+import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
 import { movementSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -19,6 +19,7 @@ export async function GET(request: Request) {
       JOIN products p ON p.id = m.product_id
       LEFT JOIN suppliers s ON s.id = m.supplier_id
       LEFT JOIN users u ON u.id = m.user_id
+      WHERE m.company_id = ${auth.user.companyId}::uuid
       ORDER BY m.created_at DESC, m.id DESC
       LIMIT 300
     `;
@@ -45,10 +46,10 @@ export async function POST(request: Request) {
       rows = await sql`
         WITH upd AS (
           UPDATE products SET quantity = quantity + ${quantity}::int, updated_at = NOW()
-          WHERE id = ${productId} AND archived = FALSE RETURNING id, quantity
+          WHERE id = ${productId} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE RETURNING id, company_id, quantity
         ), ins AS (
-          INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id, supplier_id)
-          SELECT id, 'in', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint, ${supplier}::bigint FROM upd
+          INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id, supplier_id)
+          SELECT company_id, id, 'in', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint, ${supplier}::bigint FROM upd
           RETURNING id
         )
         SELECT (SELECT quantity FROM upd) AS quantity, (SELECT id FROM ins) AS "movementId"
@@ -57,10 +58,10 @@ export async function POST(request: Request) {
       rows = await sql`
         WITH upd AS (
           UPDATE products SET quantity = quantity - ${quantity}::int, updated_at = NOW()
-          WHERE id = ${productId} AND archived = FALSE AND quantity >= ${quantity}::int RETURNING id, quantity
+          WHERE id = ${productId} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE AND quantity >= ${quantity}::int RETURNING id, company_id, quantity
         ), ins AS (
-          INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
-          SELECT id, 'out', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint FROM upd
+          INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
+          SELECT company_id, id, 'out', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint FROM upd
           RETURNING id
         )
         SELECT (SELECT quantity FROM upd) AS quantity, (SELECT id FROM ins) AS "movementId"
@@ -68,14 +69,14 @@ export async function POST(request: Request) {
     } else {
       rows = await sql`
         WITH cur AS (
-          SELECT id, quantity AS old FROM products WHERE id = ${productId} AND archived = FALSE FOR UPDATE
+          SELECT id, quantity AS old FROM products WHERE id = ${productId} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE FOR UPDATE
         ), upd AS (
           UPDATE products p SET quantity = ${quantity}::int, updated_at = NOW()
           FROM cur WHERE p.id = cur.id AND cur.old <> ${quantity}::int
-          RETURNING p.id, p.quantity, cur.old
+          RETURNING p.id, p.company_id, p.quantity, cur.old
         ), ins AS (
-          INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
-          SELECT id, 'adjustment', ABS(quantity - old),
+          INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
+          SELECT company_id, id, 'adjustment', ABS(quantity - old),
                  'Inventaire : ' || old || ' → ' || quantity || COALESCE(' — ' || ${text}::text, ''),
                  ${auth.user.id}::bigint
           FROM upd RETURNING id
@@ -90,7 +91,8 @@ export async function POST(request: Request) {
     }
     await logAudit(auth.user.id, `movement_${type}`, "product", productId, String(quantity));
     return NextResponse.json({ ok: true, quantity: rows[0].quantity }, { status: 201 });
-  } catch {
+  } catch (error) {
+    if (isForeignKey(error)) return fail("Fournisseur invalide.", 400);
     return serverError("Impossible d’enregistrer le mouvement.");
   }
 }

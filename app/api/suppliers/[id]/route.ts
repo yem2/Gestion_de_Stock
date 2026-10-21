@@ -28,7 +28,7 @@ export async function PATCH(request: Request, context: Context) {
         phone = ${phone},
         email = ${email},
         address = ${address}
-      WHERE id = ${id}
+      WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid
       RETURNING id, name, phone, email, address, created_at AS "createdAt"
     `;
     if (!rows[0]) return fail("Introuvable.", 404);
@@ -46,7 +46,7 @@ export async function DELETE(request: Request, context: Context) {
   if (!id) return fail("Identifiant invalide.");
   try {
     const sql = getSql();
-    const rows = await sql`DELETE FROM suppliers WHERE id = ${id} RETURNING id`;
+    const rows = await sql`DELETE FROM suppliers WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid RETURNING id`;
     if (!rows[0]) return fail("Introuvable.", 404);
     await logAudit(auth.user.id, "supplier_delete", "supplier", id);
     return NextResponse.json({ ok: true });

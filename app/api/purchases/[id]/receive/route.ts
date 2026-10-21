@@ -17,7 +17,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const rows = await sql`
       WITH o AS (
         UPDATE purchase_orders SET status = 'received', received_at = NOW()
-        WHERE id = ${id} AND status = 'ordered' RETURNING id, supplier_id
+        WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND status = 'ordered' RETURNING id, supplier_id
       ), agg AS (
         SELECT product_id, SUM(quantity)::int AS q FROM purchase_order_items WHERE order_id = ${id} GROUP BY product_id
       ), upd AS (
@@ -25,8 +25,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         FROM agg a WHERE p.id = a.product_id AND EXISTS (SELECT 1 FROM o)
         RETURNING p.id, a.q
       ), mov AS (
-        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id, supplier_id)
-        SELECT upd.id, 'in', upd.q, 'Réception commande #' || ${id}::text, ${auth.user.id}::bigint, (SELECT supplier_id FROM o)
+        INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id, supplier_id)
+        SELECT ${auth.user.companyId}::uuid, upd.id, 'in', upd.q, 'Réception commande #' || ${id}::text, ${auth.user.id}::bigint, (SELECT supplier_id FROM o)
         FROM upd RETURNING 1
       )
       SELECT (SELECT id FROM o) AS id

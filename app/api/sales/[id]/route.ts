@@ -19,7 +19,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       FROM sales s
       LEFT JOIN customers c ON c.id = s.customer_id
       LEFT JOIN users u ON u.id = s.user_id
-      WHERE s.id = ${id}
+      WHERE s.id = ${id} AND s.company_id = ${auth.user.companyId}::uuid
     `;
     if (!sales[0]) return fail("Vente introuvable.", 404);
     const items = await sql`

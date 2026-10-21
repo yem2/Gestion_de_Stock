@@ -17,6 +17,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const sql = getSql();
     const rows = await sql`
       SELECT u.id AS "userId", u.role FROM password_resets r JOIN users u ON u.id = r.user_id
+      JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ${auth.user.companyId}::uuid
       WHERE r.id = ${id} AND r.used_at IS NULL AND r.token_hash IS NULL AND r.expires_at > NOW() AND u.active = TRUE
     `;
     const target = rows[0];

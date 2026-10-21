@@ -14,6 +14,7 @@ export async function GET(request: Request) {
     const entries = await sql`
       SELECT a.id, a.action, a.entity, a.entity_id AS "entityId", a.detail, a.created_at AS "createdAt", u.name AS "userName"
       FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
+      WHERE a.company_id = ${auth.user.companyId}::uuid
       ORDER BY a.created_at DESC, a.id DESC LIMIT 300
     `;
     return NextResponse.json({ entries });

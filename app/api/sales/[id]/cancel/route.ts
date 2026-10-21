@@ -16,15 +16,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const sql = getSql();
     const rows = await sql`
       WITH s AS (
-        UPDATE sales SET status = 'cancelled' WHERE id = ${id} AND status = 'completed' RETURNING id
+        UPDATE sales SET status = 'cancelled' WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND status = 'completed' RETURNING id
       ), restock AS (
         UPDATE products p SET quantity = p.quantity + si.q, updated_at = NOW()
         FROM (SELECT product_id, SUM(quantity)::int AS q FROM sale_items WHERE sale_id = ${id} GROUP BY product_id) si
         WHERE p.id = si.product_id AND EXISTS (SELECT 1 FROM s)
         RETURNING p.id, si.q
       ), mov AS (
-        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
-        SELECT id, 'in', q, 'Annulation vente #' || ${id}::text, ${auth.user.id}::bigint FROM restock
+        INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
+        SELECT ${auth.user.companyId}::uuid, id, 'in', q, 'Annulation vente #' || ${id}::text, ${auth.user.id}::bigint FROM restock
         RETURNING 1
       )
       SELECT (SELECT id FROM s) AS id

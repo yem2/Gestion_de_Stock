@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 import { authorize, logAudit } from "@/lib/auth";
 import { rolesFor } from "@/lib/roles";
-import { fail, parseBody, serverError } from "@/lib/api";
+import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
 import { purchaseSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -19,6 +19,7 @@ export async function GET(request: Request) {
       FROM purchase_orders o
       LEFT JOIN suppliers s ON s.id = o.supplier_id
       LEFT JOIN users u ON u.id = o.user_id
+      WHERE o.company_id = ${auth.user.companyId}::uuid
       ORDER BY o.created_at DESC, o.id DESC LIMIT 300
     `;
     return NextResponse.json({ purchases });
@@ -46,12 +47,12 @@ export async function POST(request: Request) {
         SELECT (e->>'productId')::bigint AS product_id, (e->>'quantity')::int AS qty, (e->>'unitCost')::numeric AS cost
         FROM jsonb_array_elements(${itemsJson}::jsonb) e
       ), valid AS (
-        SELECT i.* FROM items i JOIN products p ON p.id = i.product_id AND p.archived = FALSE
+        SELECT i.* FROM items i JOIN products p ON p.id = i.product_id AND p.archived = FALSE AND p.company_id = ${auth.user.companyId}::uuid
       ), ok AS (
         SELECT ((SELECT COUNT(*) FROM valid) = (SELECT COUNT(*) FROM items)) AS good
       ), ord AS (
-        INSERT INTO purchase_orders (supplier_id, note, total_cost, user_id)
-        SELECT ${supplierId ?? null}::bigint, ${text}::text,
+        INSERT INTO purchase_orders (company_id, supplier_id, note, total_cost, user_id)
+        SELECT ${auth.user.companyId}::uuid, ${supplierId ?? null}::bigint, ${text}::text,
                COALESCE((SELECT SUM(qty * cost) FROM valid), 0), ${auth.user.id}::bigint
         WHERE (SELECT good FROM ok)
         RETURNING id, total_cost
@@ -65,7 +66,8 @@ export async function POST(request: Request) {
     if (rows[0]?.id == null) return fail("Commande impossible : produit introuvable.", 409);
     await logAudit(auth.user.id, "purchase_create", "purchase", Number(rows[0].id), String(rows[0].total));
     return NextResponse.json({ purchase: { id: rows[0].id, total: rows[0].total } }, { status: 201 });
-  } catch {
+  } catch (error) {
+    if (isForeignKey(error)) return fail("Fournisseur invalide.", 400);
     return serverError("Impossible d’enregistrer la commande.");
   }
 }

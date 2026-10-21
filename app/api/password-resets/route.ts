@@ -15,6 +15,7 @@ export async function GET(request: Request) {
     const rows = await sql`
       SELECT r.id, r.requested_at AS "requestedAt", u.name, u.email, u.role
       FROM password_resets r JOIN users u ON u.id = r.user_id
+      JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ${auth.user.companyId}::uuid
       WHERE r.used_at IS NULL AND r.token_hash IS NULL AND r.expires_at > NOW() AND u.active = TRUE
       ORDER BY r.requested_at DESC LIMIT 50
     `;

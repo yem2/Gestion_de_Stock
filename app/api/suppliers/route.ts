@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     const sql = getSql();
     const rows = await sql`
       SELECT id, name, phone, email, address, created_at AS "createdAt"
-      FROM suppliers ORDER BY name ASC LIMIT 1000
+      FROM suppliers WHERE company_id = ${auth.user.companyId}::uuid ORDER BY name ASC LIMIT 1000
     `;
     return NextResponse.json({ suppliers: rows });
   } catch {
@@ -34,8 +34,8 @@ export async function POST(request: Request) {
   try {
     const sql = getSql();
     const rows = await sql`
-      INSERT INTO suppliers (name, phone, email, address)
-      VALUES (${d.name}, ${phone}, ${email}, ${address})
+      INSERT INTO suppliers (company_id, name, phone, email, address)
+      VALUES (${auth.user.companyId}::uuid, ${d.name}, ${phone}, ${email}, ${address})
       RETURNING id, name, phone, email, address, created_at AS "createdAt"
     `;
     await logAudit(auth.user.id, "supplier_create", "supplier", Number(rows[0].id));

@@ -31,7 +31,7 @@ export async function GET(request: Request) {
     if (type === "products") {
       const rows = await sql`
         SELECT sku, name, category, quantity, unit_price, min_quantity, quantity * unit_price AS value
-        FROM products WHERE archived = FALSE ORDER BY name
+        FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE ORDER BY name
       `;
       body = csv(
         ["Référence", "Produit", "Catégorie", "Quantité", "Prix unitaire (FCFA)", "Seuil minimum", "Valeur (FCFA)"],
@@ -43,6 +43,7 @@ export async function GET(request: Request) {
                m.quantity, m.note, s.name AS supplier, u.name AS author
         FROM stock_movements m JOIN products p ON p.id = m.product_id
         LEFT JOIN suppliers s ON s.id = m.supplier_id LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.company_id = ${auth.user.companyId}::uuid
         ORDER BY m.created_at DESC LIMIT 5000
       `;
       const labels: Record<string, string> = { in: "Entrée", out: "Sortie", adjustment: "Inventaire" };
@@ -55,6 +56,7 @@ export async function GET(request: Request) {
         SELECT s.id, to_char(s.created_at AT TIME ZONE ${TZ}, 'YYYY-MM-DD HH24:MI') AS date, s.status, s.payment_method,
                s.total_amount, c.name AS customer, u.name AS seller
         FROM sales s LEFT JOIN customers c ON c.id = s.customer_id LEFT JOIN users u ON u.id = s.user_id
+        WHERE s.company_id = ${auth.user.companyId}::uuid
         ORDER BY s.created_at DESC LIMIT 5000
       `;
       const statuses: Record<string, string> = { completed: "Terminée", cancelled: "Annulée", draft: "Brouillon" };

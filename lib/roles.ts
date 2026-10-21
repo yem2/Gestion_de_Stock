@@ -9,6 +9,15 @@ export const ROLE_LABELS: Record<Role, string> = {
   seller: "Vendeur"
 };
 
+/** Rôle RBAC (table roles) correspondant à chaque rôle historique de users.role. */
+export const RBAC_ROLE_NAMES: Record<Role, string> = {
+  super_admin: "Administrateur entreprise",
+  admin: "Administrateur entreprise",
+  manager: "Directeur",
+  storekeeper: "Gestionnaire de stock",
+  seller: "Vendeur / Caissier"
+};
+
 export function isRole(value: unknown): value is Role {
   return typeof value === "string" && (ROLES as readonly string[]).includes(value);
 }
