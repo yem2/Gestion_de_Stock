@@ -1,6 +1,6 @@
-diff -ru -x node_modules orig/Gestion_de_Stock-main/README.md Gestion_de_Stock-main/README.md
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/README.md Gestion_de_Stock-main/README.md
 --- orig/Gestion_de_Stock-main/README.md	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/README.md	2026-10-21 08:02:21.427771447 +0000
++++ Gestion_de_Stock-main/README.md	2026-10-22 11:33:46.819767089 +0000
 @@ -28,7 +28,7 @@
  2. Installe les dépendances : `npm install`
  3. Copie `.env.example` vers `.env.local`.
@@ -10,7 +10,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/README.md Gestion_de_Stock-m
  6. Lance `npm run dev`, puis ouvre `http://localhost:3000`.
  
  Sans `DATABASE_URL` et la migration, l'interface s'affiche mais les données et l'ajout de produits ne fonctionnent pas.
-@@ -86,3 +86,22 @@
+@@ -86,3 +86,36 @@
  - **Achats** : commandes aux fournisseurs (articles, quantités, coût unitaire). « Réceptionner » passe la commande à *reçue*, augmente le stock et trace les entrées dans la même requête SQL ; une commande ne peut être reçue qu'une fois. Annulation possible tant qu'elle n'est pas reçue.
  - **Journal d'activité** (administrateurs) : les 300 dernières actions (connexions, produits, ventes, achats, exports, paramètres…) avec filtre.
  - **Paramètres** : changement de son propre mot de passe (ancien mot de passe exigé, autres sessions fermées) et informations de l'entreprise (nom, adresse, téléphone, message) reprises sur les reçus de vente.
@@ -33,7 +33,21 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/README.md Gestion_de_Stock-m
 +Connexions et performances : les requêtes passent par le pilote HTTP Neon (aucune connexion persistante). Utiliser l'URL **pooler** de Neon dans `DATABASE_URL` et placer les fonctions Vercel dans la région la plus proche de la base.
 +
 +Limites actuelles : un seul entrepôt par entreprise est exploité par l'interface, la session prend la première entreprise active de l'utilisateur, et les permissions restent celles de `lib/roles.ts` (les tables RBAC sont alimentées mais pas encore lues).
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/audit/route.ts Gestion_de_Stock-main/app/api/audit/route.ts
++
++## Phase 03 — Entrepôts et transferts
++
++Migrations à appliquer **avant** de déployer le code correspondant :
++
++1. `db/0010_phase3_stock_foundations.sql` — tables de la phase 3 (transferts, inventaires, codes-barres, réservations, notifications, permissions).
++2. `db/0011_transfers_functions.sql` — correction du déclencheur de soldes, types de mouvement `transfer_out` / `transfer_in`, fonctions `ship_transfer`, `receive_transfer`, `cancel_transfer`.
++
++Principes :
++- `products.quantity` reste le stock **total sous responsabilité de l'entreprise** (entrepôts + en transit). Les ventes, achats et mouvements existants agissent sur l'entrepôt principal ; le déclencheur applique la variation à son solde.
++- Un transfert déplace uniquement les soldes par entrepôt : expédition = retrait de l'origine (stock en transit), réception = ajout à la destination. Le total ne change pas.
++- Une vente ou une sortie supérieure au stock de l'entrepôt principal est refusée (409) même si le total est suffisant.
++- Les numéros de transfert (`TR-AAAA-00001`) sont générés côté serveur, sans doublon, via `document_sequences`.
++- Limite actuelle : la réception est complète (pas de réception partielle) ; les ventes ne choisissent pas encore l'entrepôt.
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/audit/route.ts Gestion_de_Stock-main/app/api/audit/route.ts
 --- orig/Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-21 08:00:33.729401120 +0000
 @@ -14,6 +14,7 @@
@@ -44,7 +58,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/audit/route.ts Gesti
        ORDER BY a.created_at DESC, a.id DESC LIMIT 300
      `;
      return NextResponse.json({ entries });
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/auth/setup/route.ts Gestion_de_Stock-main/app/api/auth/setup/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/auth/setup/route.ts Gestion_de_Stock-main/app/api/auth/setup/route.ts
 --- orig/Gestion_de_Stock-main/app/api/auth/setup/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/auth/setup/route.ts	2026-10-21 08:01:02.465658990 +0000
 @@ -3,6 +3,7 @@
@@ -79,7 +93,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/auth/setup/route.ts 
      `;
      await logAudit(Number(rows[0].id), "setup_super_admin", "user", Number(rows[0].id));
      return NextResponse.json({ ok: true }, { status: 201 });
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/customers/[id]/route.ts Gestion_de_Stock-main/app/api/customers/[id]/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/customers/[id]/route.ts Gestion_de_Stock-main/app/api/customers/[id]/route.ts
 --- orig/Gestion_de_Stock-main/app/api/customers/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/customers/[id]/route.ts	2026-10-21 08:00:33.728439916 +0000
 @@ -26,7 +26,7 @@
@@ -100,7 +114,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/customers/[id]/route
      if (!rows[0]) return fail("Introuvable.", 404);
      await logAudit(auth.user.id, "customer_delete", "customer", id);
      return NextResponse.json({ ok: true });
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/customers/route.ts Gestion_de_Stock-main/app/api/customers/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/customers/route.ts Gestion_de_Stock-main/app/api/customers/route.ts
 --- orig/Gestion_de_Stock-main/app/api/customers/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/customers/route.ts	2026-10-21 08:00:33.728110544 +0000
 @@ -14,7 +14,7 @@
@@ -123,15 +137,15 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/customers/route.ts G
        RETURNING id, name, phone, email, created_at AS "createdAt"
      `;
      await logAudit(auth.user.id, "customer_create", "customer", Number(rows[0].id));
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/movements/route.ts Gestion_de_Stock-main/app/api/movements/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/movements/route.ts Gestion_de_Stock-main/app/api/movements/route.ts
 --- orig/Gestion_de_Stock-main/app/api/movements/route.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/app/api/movements/route.ts	2026-10-21 08:00:33.724543144 +0000
++++ Gestion_de_Stock-main/app/api/movements/route.ts	2026-10-22 11:31:30.697950423 +0000
 @@ -2,7 +2,7 @@
  import { getSql } from "@/lib/db";
  import { authorize, logAudit } from "@/lib/auth";
  import { rolesFor } from "@/lib/roles";
 -import { fail, parseBody, serverError } from "@/lib/api";
-+import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
++import { MAIN_WAREHOUSE_STOCK_ERROR, fail, isCheckViolation, isForeignKey, parseBody, serverError } from "@/lib/api";
  import { movementSchema } from "@/lib/validation";
  
  export const runtime = "nodejs";
@@ -190,17 +204,18 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/movements/route.ts G
                   'Inventaire : ' || old || ' → ' || quantity || COALESCE(' — ' || ${text}::text, ''),
                   ${auth.user.id}::bigint
            FROM upd RETURNING id
-@@ -90,7 +91,8 @@
+@@ -90,7 +91,9 @@
      }
      await logAudit(auth.user.id, `movement_${type}`, "product", productId, String(quantity));
      return NextResponse.json({ ok: true, quantity: rows[0].quantity }, { status: 201 });
 -  } catch {
 +  } catch (error) {
 +    if (isForeignKey(error)) return fail("Fournisseur invalide.", 400);
++    if (isCheckViolation(error)) return fail(MAIN_WAREHOUSE_STOCK_ERROR, 409);
      return serverError("Impossible d’enregistrer le mouvement.");
    }
  }
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts
 --- orig/Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts	2026-10-21 08:01:02.467160101 +0000
 @@ -17,6 +17,7 @@
@@ -211,7 +226,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/password-resets/[id]
        WHERE r.id = ${id} AND r.used_at IS NULL AND r.token_hash IS NULL AND r.expires_at > NOW() AND u.active = TRUE
      `;
      const target = rows[0];
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/password-resets/route.ts Gestion_de_Stock-main/app/api/password-resets/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/password-resets/route.ts Gestion_de_Stock-main/app/api/password-resets/route.ts
 --- orig/Gestion_de_Stock-main/app/api/password-resets/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/password-resets/route.ts	2026-10-21 08:01:02.467010495 +0000
 @@ -15,6 +15,7 @@
@@ -222,7 +237,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/password-resets/rout
        WHERE r.used_at IS NULL AND r.token_hash IS NULL AND r.expires_at > NOW() AND u.active = TRUE
        ORDER BY r.requested_at DESC LIMIT 50
      `;
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/products/[id]/route.ts Gestion_de_Stock-main/app/api/products/[id]/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/products/[id]/route.ts Gestion_de_Stock-main/app/api/products/[id]/route.ts
 --- orig/Gestion_de_Stock-main/app/api/products/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/products/[id]/route.ts	2026-10-21 08:00:33.723323429 +0000
 @@ -28,7 +28,7 @@
@@ -243,7 +258,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/products/[id]/route.
      if (!rows[0]) return fail("Produit introuvable.", 404);
      await logAudit(auth.user.id, "product_archive", "product", id);
      return NextResponse.json({ ok: true });
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/products/route.ts Gestion_de_Stock-main/app/api/products/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/products/route.ts Gestion_de_Stock-main/app/api/products/route.ts
 --- orig/Gestion_de_Stock-main/app/api/products/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/products/route.ts	2026-10-21 08:00:33.722923634 +0000
 @@ -15,7 +15,7 @@
@@ -273,7 +288,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/products/route.ts Ge
          RETURNING 1
        )
        SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts
 --- orig/Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts	2026-10-21 08:00:33.727785519 +0000
 @@ -13,7 +13,7 @@
@@ -285,7 +300,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/[id]/cance
      if (!rows[0]) return fail("Commande introuvable ou déjà traitée.", 409);
      await logAudit(auth.user.id, "purchase_cancel", "purchase", id);
      return NextResponse.json({ ok: true });
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts
 --- orig/Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts	2026-10-21 08:00:33.727564693 +0000
 @@ -17,7 +17,7 @@
@@ -308,7 +323,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/[id]/recei
          FROM upd RETURNING 1
        )
        SELECT (SELECT id FROM o) AS id
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/[id]/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/purchases/[id]/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/route.ts
 --- orig/Gestion_de_Stock-main/app/api/purchases/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/purchases/[id]/route.ts	2026-10-21 08:00:33.727043517 +0000
 @@ -19,7 +19,7 @@
@@ -320,7 +335,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/[id]/route
      `;
      if (!orders[0]) return fail("Commande introuvable.", 404);
      const items = await sql`
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/route.ts Gestion_de_Stock-main/app/api/purchases/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/purchases/route.ts Gestion_de_Stock-main/app/api/purchases/route.ts
 --- orig/Gestion_de_Stock-main/app/api/purchases/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/purchases/route.ts	2026-10-21 08:00:33.726768412 +0000
 @@ -2,7 +2,7 @@
@@ -366,9 +381,9 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/route.ts G
      return serverError("Impossible d’enregistrer la commande.");
    }
  }
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/reports/export/route.ts Gestion_de_Stock-main/app/api/reports/export/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/reports/export/route.ts Gestion_de_Stock-main/app/api/reports/export/route.ts
 --- orig/Gestion_de_Stock-main/app/api/reports/export/route.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/app/api/reports/export/route.ts	2026-10-21 08:01:02.464663940 +0000
++++ Gestion_de_Stock-main/app/api/reports/export/route.ts	2026-10-22 11:31:44.339985912 +0000
 @@ -31,7 +31,7 @@
      if (type === "products") {
        const rows = await sql`
@@ -378,14 +393,18 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/reports/export/route
        `;
        body = csv(
          ["Référence", "Produit", "Catégorie", "Quantité", "Prix unitaire (FCFA)", "Seuil minimum", "Valeur (FCFA)"],
-@@ -43,6 +43,7 @@
+@@ -43,9 +43,10 @@
                 m.quantity, m.note, s.name AS supplier, u.name AS author
          FROM stock_movements m JOIN products p ON p.id = m.product_id
          LEFT JOIN suppliers s ON s.id = m.supplier_id LEFT JOIN users u ON u.id = m.user_id
 +        WHERE m.company_id = ${auth.user.companyId}::uuid
          ORDER BY m.created_at DESC LIMIT 5000
        `;
-       const labels: Record<string, string> = { in: "Entrée", out: "Sortie", adjustment: "Inventaire" };
+-      const labels: Record<string, string> = { in: "Entrée", out: "Sortie", adjustment: "Inventaire" };
++      const labels: Record<string, string> = { in: "Entrée", out: "Sortie", adjustment: "Inventaire", transfer_out: "Transfert sortant", transfer_in: "Transfert entrant" };
+       body = csv(
+         ["Date", "Produit", "Type", "Quantité", "Note", "Fournisseur", "Auteur"],
+         rows.map((r) => [r.date, r.name, labels[String(r.movement_type)] ?? r.movement_type, r.quantity, r.note, r.supplier, r.author])
 @@ -55,6 +56,7 @@
          SELECT s.id, to_char(s.created_at AT TIME ZONE ${TZ}, 'YYYY-MM-DD HH24:MI') AS date, s.status, s.payment_method,
                 s.total_amount, c.name AS customer, u.name AS seller
@@ -394,7 +413,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/reports/export/route
          ORDER BY s.created_at DESC LIMIT 5000
        `;
        const statuses: Record<string, string> = { completed: "Terminée", cancelled: "Annulée", draft: "Brouillon" };
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/reports/summary/route.ts Gestion_de_Stock-main/app/api/reports/summary/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/reports/summary/route.ts Gestion_de_Stock-main/app/api/reports/summary/route.ts
 --- orig/Gestion_de_Stock-main/app/api/reports/summary/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/reports/summary/route.ts	2026-10-21 08:01:02.464213100 +0000
 @@ -20,44 +20,45 @@
@@ -450,7 +469,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/reports/summary/rout
          ORDER BY m.created_at DESC, m.id DESC LIMIT 6
        `
      ]);
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts
 --- orig/Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts	2026-10-21 08:00:33.725917636 +0000
 @@ -16,15 +16,15 @@
@@ -472,7 +491,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/sales/[id]/cancel/ro
          RETURNING 1
        )
        SELECT (SELECT id FROM s) AS id
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/sales/[id]/route.ts Gestion_de_Stock-main/app/api/sales/[id]/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/sales/[id]/route.ts Gestion_de_Stock-main/app/api/sales/[id]/route.ts
 --- orig/Gestion_de_Stock-main/app/api/sales/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/sales/[id]/route.ts	2026-10-21 08:00:33.725604179 +0000
 @@ -19,7 +19,7 @@
@@ -484,15 +503,15 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/sales/[id]/route.ts 
      `;
      if (!sales[0]) return fail("Vente introuvable.", 404);
      const items = await sql`
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/sales/route.ts Gestion_de_Stock-main/app/api/sales/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/sales/route.ts Gestion_de_Stock-main/app/api/sales/route.ts
 --- orig/Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-21 08:00:33.725463400 +0000
++++ Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-22 11:31:30.697684929 +0000
 @@ -2,7 +2,7 @@
  import { getSql } from "@/lib/db";
  import { authorize, logAudit } from "@/lib/auth";
  import { rolesFor } from "@/lib/roles";
 -import { fail, parseBody, serverError } from "@/lib/api";
-+import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
++import { MAIN_WAREHOUSE_STOCK_ERROR, fail, isCheckViolation, isForeignKey, parseBody, serverError } from "@/lib/api";
  import { saleSchema } from "@/lib/validation";
  
  export const runtime = "nodejs";
@@ -532,17 +551,18 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/sales/route.ts Gesti
          RETURNING 1
        )
        SELECT (SELECT id FROM sale) AS id, (SELECT total_amount FROM sale) AS total
-@@ -82,7 +83,8 @@
+@@ -82,7 +83,9 @@
      }
      await logAudit(auth.user.id, "sale_create", "sale", Number(rows[0].id), String(rows[0].total));
      return NextResponse.json({ sale: { id: rows[0].id, total: rows[0].total } }, { status: 201 });
 -  } catch {
 +  } catch (error) {
 +    if (isForeignKey(error)) return fail("Client invalide.", 400);
++    if (isCheckViolation(error)) return fail(MAIN_WAREHOUSE_STOCK_ERROR, 409);
      return serverError("Impossible d’enregistrer la vente.");
    }
  }
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/settings/route.ts Gestion_de_Stock-main/app/api/settings/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/settings/route.ts Gestion_de_Stock-main/app/api/settings/route.ts
 --- orig/Gestion_de_Stock-main/app/api/settings/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/settings/route.ts	2026-10-21 08:01:02.465210567 +0000
 @@ -9,11 +9,12 @@
@@ -592,7 +612,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/settings/route.ts Ge
    } catch {
      return serverError("Impossible d’enregistrer les paramètres.");
    }
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts
 --- orig/Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts	2026-10-21 08:00:33.729224315 +0000
 @@ -28,7 +28,7 @@
@@ -613,7 +633,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/suppliers/[id]/route
      if (!rows[0]) return fail("Introuvable.", 404);
      await logAudit(auth.user.id, "supplier_delete", "supplier", id);
      return NextResponse.json({ ok: true });
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/suppliers/route.ts Gestion_de_Stock-main/app/api/suppliers/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/suppliers/route.ts Gestion_de_Stock-main/app/api/suppliers/route.ts
 --- orig/Gestion_de_Stock-main/app/api/suppliers/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/suppliers/route.ts	2026-10-21 08:00:33.728882249 +0000
 @@ -14,7 +14,7 @@
@@ -636,7 +656,201 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/suppliers/route.ts G
        RETURNING id, name, phone, email, address, created_at AS "createdAt"
      `;
      await logAudit(auth.user.id, "supplier_create", "supplier", Number(rows[0].id));
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/users/[id]/route.ts Gestion_de_Stock-main/app/api/users/[id]/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/transfers/[id]/cancel/route.ts Gestion_de_Stock-main/app/api/transfers/[id]/cancel/route.ts
+--- orig/Gestion_de_Stock-main/app/api/transfers/[id]/cancel/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/transfers/[id]/cancel/route.ts	2026-10-22 11:31:59.688532033 +0000
+@@ -0,0 +1,23 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, serverError, transferFailure } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++/** L'opération s'exécute dans une fonction SQL unique : tout réussit ou tout est annulé. */
++export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("transfers.write"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    await sql`SELECT cancel_transfer(${auth.user.companyId}::uuid, ${id}::uuid)`;
++    await logAudit(auth.user.id, "transfer_cancel", "transfer", id);
++    return NextResponse.json({ ok: true });
++  } catch (error) {
++    return transferFailure(error) ?? serverError("Impossible d’annuler le transfert.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/transfers/[id]/receive/route.ts Gestion_de_Stock-main/app/api/transfers/[id]/receive/route.ts
+--- orig/Gestion_de_Stock-main/app/api/transfers/[id]/receive/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/transfers/[id]/receive/route.ts	2026-10-22 11:31:59.687769408 +0000
+@@ -0,0 +1,23 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, serverError, transferFailure } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++/** L'opération s'exécute dans une fonction SQL unique : tout réussit ou tout est annulé. */
++export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("transfers.receive"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    await sql`SELECT receive_transfer(${auth.user.companyId}::uuid, ${id}::uuid, ${auth.user.id}::bigint)`;
++    await logAudit(auth.user.id, "transfer_receive", "transfer", id);
++    return NextResponse.json({ ok: true });
++  } catch (error) {
++    return transferFailure(error) ?? serverError("Impossible de réceptionner le transfert.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/transfers/[id]/route.ts Gestion_de_Stock-main/app/api/transfers/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/transfers/[id]/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/transfers/[id]/route.ts	2026-10-22 11:31:59.686130111 +0000
+@@ -0,0 +1,28 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("transfers.view"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    const lines = await sql`
++      SELECT l.id, l.product_id AS "productId", p.sku, p.name,
++             l.quantity_requested::int AS requested, l.quantity_shipped::int AS shipped, l.quantity_received::int AS received
++      FROM stock_transfer_lines l
++      JOIN products p ON p.id = l.product_id AND p.company_id = l.company_id
++      WHERE l.transfer_id = ${id}::uuid AND l.company_id = ${auth.user.companyId}::uuid
++      ORDER BY p.name ASC
++    `;
++    return NextResponse.json({ lines });
++  } catch {
++    return serverError();
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/transfers/[id]/ship/route.ts Gestion_de_Stock-main/app/api/transfers/[id]/ship/route.ts
+--- orig/Gestion_de_Stock-main/app/api/transfers/[id]/ship/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/transfers/[id]/ship/route.ts	2026-10-22 11:31:59.686970102 +0000
+@@ -0,0 +1,23 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, serverError, transferFailure } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++/** L'opération s'exécute dans une fonction SQL unique : tout réussit ou tout est annulé. */
++export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("transfers.write"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    await sql`SELECT ship_transfer(${auth.user.companyId}::uuid, ${id}::uuid, ${auth.user.id}::bigint)`;
++    await logAudit(auth.user.id, "transfer_ship", "transfer", id);
++    return NextResponse.json({ ok: true });
++  } catch (error) {
++    return transferFailure(error) ?? serverError("Impossible d’expédier le transfert.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/transfers/route.ts Gestion_de_Stock-main/app/api/transfers/route.ts
+--- orig/Gestion_de_Stock-main/app/api/transfers/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/transfers/route.ts	2026-10-22 11:31:59.685212928 +0000
+@@ -0,0 +1,77 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
++import { transferSchema } from "@/lib/validation";
++
++export const runtime = "nodejs";
++
++export async function GET(request: Request) {
++  const auth = await authorize(request, rolesFor("transfers.view"));
++  if ("error" in auth) return auth.error;
++  try {
++    const sql = getSql();
++    const transfers = await sql`
++      SELECT t.id, t.transfer_number AS number, t.status, t.note,
++             t.created_at AS "createdAt", t.shipped_at AS "shippedAt", t.received_at AS "receivedAt",
++             ws.name AS source, wd.name AS destination, u.name AS "createdBy",
++             (SELECT COUNT(*)::int FROM stock_transfer_lines l WHERE l.transfer_id = t.id) AS lines,
++             (SELECT COALESCE(SUM(l.quantity_requested), 0)::int FROM stock_transfer_lines l WHERE l.transfer_id = t.id) AS units
++      FROM stock_transfers t
++      JOIN warehouses ws ON ws.id = t.source_warehouse_id
++      JOIN warehouses wd ON wd.id = t.destination_warehouse_id
++      LEFT JOIN users u ON u.id = t.created_by
++      WHERE t.company_id = ${auth.user.companyId}::uuid
++      ORDER BY t.created_at DESC
++      LIMIT 200
++    `;
++    return NextResponse.json({ transfers });
++  } catch {
++    return serverError();
++  }
++}
++
++/** Crée un brouillon : numéro généré côté serveur, lignes enregistrées dans la même instruction. */
++export async function POST(request: Request) {
++  const auth = await authorize(request, rolesFor("transfers.write"));
++  if ("error" in auth) return auth.error;
++  const body = await parseBody(request, transferSchema);
++  if ("error" in body) return body.error;
++  const { sourceId, destinationId, lines } = body.data;
++  const note = body.data.note?.trim() ? body.data.note.trim() : null;
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      WITH seq AS (
++        INSERT INTO document_sequences (company_id, document_type, period, next_value)
++        VALUES (${auth.user.companyId}::uuid, 'transfer', to_char(now(), 'YYYY'), 2)
++        ON CONFLICT (company_id, document_type, period)
++        DO UPDATE SET next_value = document_sequences.next_value + 1
++        RETURNING period, next_value - 1 AS n
++      ), tr AS (
++        INSERT INTO stock_transfers (company_id, transfer_number, source_warehouse_id, destination_warehouse_id, note, created_by)
++        SELECT ${auth.user.companyId}::uuid, 'TR-' || seq.period || '-' || lpad(seq.n::text, 5, '0'),
++               ${sourceId}::uuid, ${destinationId}::uuid, ${note}::text, ${auth.user.id}::bigint
++        FROM seq
++        WHERE (
++          SELECT COUNT(*) FROM warehouses
++          WHERE company_id = ${auth.user.companyId}::uuid AND status = 'active' AND id IN (${sourceId}::uuid, ${destinationId}::uuid)
++        ) = 2
++        RETURNING id, transfer_number
++      ), ins AS (
++        INSERT INTO stock_transfer_lines (company_id, transfer_id, product_id, quantity_requested)
++        SELECT ${auth.user.companyId}::uuid, tr.id, x."productId", x.quantity
++        FROM tr, jsonb_to_recordset(${JSON.stringify(lines)}::jsonb) AS x("productId" bigint, quantity numeric)
++        RETURNING 1
++      )
++      SELECT id, transfer_number AS number FROM tr
++    `;
++    if (rows.length === 0) return fail("Entrepôt introuvable ou inactif.", 400);
++    await logAudit(auth.user.id, "transfer_create", "transfer", String(rows[0].id), String(rows[0].number));
++    return NextResponse.json({ id: rows[0].id, number: rows[0].number }, { status: 201 });
++  } catch (error) {
++    if (isForeignKey(error)) return fail("Entrepôt ou produit invalide.", 400);
++    return serverError("Impossible de créer le transfert.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/users/[id]/route.ts Gestion_de_Stock-main/app/api/users/[id]/route.ts
 --- orig/Gestion_de_Stock-main/app/api/users/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/users/[id]/route.ts	2026-10-21 08:01:02.466827487 +0000
 @@ -2,6 +2,7 @@
@@ -705,7 +919,7 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/users/[id]/route.ts 
      `;
      await logAudit(
        auth.user.id, "user_update", "user", targetId,
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/users/route.ts Gestion_de_Stock-main/app/api/users/route.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/users/route.ts Gestion_de_Stock-main/app/api/users/route.ts
 --- orig/Gestion_de_Stock-main/app/api/users/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/users/route.ts	2026-10-21 08:01:02.466185968 +0000
 @@ -2,6 +2,7 @@
@@ -751,7 +965,156 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/users/route.ts Gesti
      `;
      await logAudit(auth.user.id, "user_create", "user", Number(rows[0].id), parsed.data.role);
      return NextResponse.json({ user: rows[0] }, { status: 201 });
-diff -ru -x node_modules orig/Gestion_de_Stock-main/app/globals.css Gestion_de_Stock-main/app/globals.css
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/warehouses/[id]/route.ts Gestion_de_Stock-main/app/api/warehouses/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/warehouses/[id]/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/warehouses/[id]/route.ts	2026-10-22 11:31:44.345577881 +0000
+@@ -0,0 +1,45 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUnique, isUuid, parseBody, serverError } from "@/lib/api";
++import { warehouseUpdateSchema } from "@/lib/validation";
++
++export const runtime = "nodejs";
++
++export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("warehouses.write"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  const body = await parseBody(request, warehouseUpdateSchema);
++  if ("error" in body) return body.error;
++  const { name, code, status } = body.data;
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      UPDATE warehouses w SET
++        name = COALESCE(${name ?? null}::text, w.name),
++        code = COALESCE(${code ?? null}::text, w.code),
++        status = COALESCE(${status ?? null}::text, w.status)
++      WHERE w.id = ${id}::uuid AND w.company_id = ${auth.user.companyId}::uuid
++        AND (
++          ${status ?? null}::text IS DISTINCT FROM 'inactive'
++          OR (NOT w.is_default AND NOT EXISTS (
++            SELECT 1 FROM stock_balances b WHERE b.warehouse_id = w.id AND b.quantity_on_hand > 0
++          ) AND NOT EXISTS (
++            SELECT 1 FROM stock_transfers t WHERE t.status IN ('draft', 'shipped') AND (t.source_warehouse_id = w.id OR t.destination_warehouse_id = w.id)
++          ))
++        )
++      RETURNING w.id
++    `;
++    if (rows.length === 0) {
++      return fail("Entrepôt introuvable, ou impossible à désactiver (entrepôt principal, stock restant ou transfert en cours).", 409);
++    }
++    await logAudit(auth.user.id, "warehouse_update", "warehouse", id);
++    return NextResponse.json({ ok: true });
++  } catch (error) {
++    if (isUnique(error)) return fail("Ce code d’entrepôt existe déjà.", 409);
++    return serverError("Impossible de modifier l’entrepôt.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/warehouses/[id]/stock/route.ts Gestion_de_Stock-main/app/api/warehouses/[id]/stock/route.ts
+--- orig/Gestion_de_Stock-main/app/api/warehouses/[id]/stock/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/warehouses/[id]/stock/route.ts	2026-10-22 11:31:44.346309283 +0000
+@@ -0,0 +1,30 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++/** Stock détenu par un entrepôt (produits non archivés ayant une quantité positive). */
++export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("warehouses.view"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    const stock = await sql`
++      SELECT p.id, p.sku, p.name, b.quantity_on_hand::int AS "onHand",
++             (b.quantity_on_hand - b.quantity_reserved)::int AS available
++      FROM stock_balances b
++      JOIN products p ON p.id = b.product_id AND p.company_id = b.company_id
++      WHERE b.company_id = ${auth.user.companyId}::uuid AND b.warehouse_id = ${id}::uuid
++        AND b.quantity_on_hand > 0 AND p.archived = FALSE
++      ORDER BY p.name ASC
++    `;
++    return NextResponse.json({ stock });
++  } catch {
++    return serverError();
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/warehouses/route.ts Gestion_de_Stock-main/app/api/warehouses/route.ts
+--- orig/Gestion_de_Stock-main/app/api/warehouses/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/warehouses/route.ts	2026-10-22 11:31:44.344821856 +0000
+@@ -0,0 +1,50 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUnique, parseBody, serverError } from "@/lib/api";
++import { warehouseSchema } from "@/lib/validation";
++
++export const runtime = "nodejs";
++
++export async function GET(request: Request) {
++  const auth = await authorize(request, rolesFor("warehouses.view"));
++  if ("error" in auth) return auth.error;
++  try {
++    const sql = getSql();
++    const warehouses = await sql`
++      SELECT w.id, w.name, w.code, w.status, w.is_default AS "isDefault",
++             COALESCE(s.products, 0)::int AS products, COALESCE(s.units, 0)::int AS units
++      FROM warehouses w
++      LEFT JOIN (
++        SELECT warehouse_id, COUNT(*) FILTER (WHERE quantity_on_hand > 0) AS products, SUM(quantity_on_hand) AS units
++        FROM stock_balances WHERE company_id = ${auth.user.companyId}::uuid GROUP BY warehouse_id
++      ) s ON s.warehouse_id = w.id
++      WHERE w.company_id = ${auth.user.companyId}::uuid
++      ORDER BY w.is_default DESC, w.name ASC
++    `;
++    return NextResponse.json({ warehouses });
++  } catch {
++    return serverError();
++  }
++}
++
++export async function POST(request: Request) {
++  const auth = await authorize(request, rolesFor("warehouses.write"));
++  if ("error" in auth) return auth.error;
++  const body = await parseBody(request, warehouseSchema);
++  if ("error" in body) return body.error;
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      INSERT INTO warehouses (company_id, name, code)
++      VALUES (${auth.user.companyId}::uuid, ${body.data.name}, ${body.data.code})
++      RETURNING id
++    `;
++    await logAudit(auth.user.id, "warehouse_create", "warehouse", String(rows[0].id), body.data.code);
++    return NextResponse.json({ id: rows[0].id }, { status: 201 });
++  } catch (error) {
++    if (isUnique(error)) return fail("Ce code d’entrepôt existe déjà.", 409);
++    return serverError("Impossible de créer l’entrepôt.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/entrepots/page.tsx Gestion_de_Stock-main/app/entrepots/page.tsx
+--- orig/Gestion_de_Stock-main/app/entrepots/page.tsx	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/entrepots/page.tsx	2026-10-22 11:32:39.458171384 +0000
+@@ -0,0 +1,8 @@
++import AppFrame from "@/components/app-frame";
++import WarehousesView from "@/components/warehouses-view";
++
++export const dynamic = "force-dynamic";
++
++export default function Page() {
++  return <AppFrame permission="warehouses.view" render={(role) => <WarehousesView role={role} />} />;
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/globals.css Gestion_de_Stock-main/app/globals.css
 --- orig/Gestion_de_Stock-main/app/globals.css	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/globals.css	2026-10-22 06:23:37.592214934 +0000
 @@ -12,6 +12,7 @@
@@ -844,12 +1207,1052 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/app/globals.css Gestion_de_S
 +
 +.auth-card h1{font-weight:800}
 +.receipt h3{font-size:1.1rem;font-weight:800}
-Only in Gestion_de_Stock-main/db: 0005_multi_company_rbac.sql
-Only in Gestion_de_Stock-main/db: 0006_warehouses_balances.sql
-Only in Gestion_de_Stock-main/db: 0007_sync_triggers.sql
-Only in Gestion_de_Stock-main/db: 0008_drop_transitional_defaults.sql
-Only in Gestion_de_Stock-main/db: 0009_settings_to_company.sql
-diff -ru -x node_modules orig/Gestion_de_Stock-main/lib/auth.ts Gestion_de_Stock-main/lib/auth.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/transferts/page.tsx Gestion_de_Stock-main/app/transferts/page.tsx
+--- orig/Gestion_de_Stock-main/app/transferts/page.tsx	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/transferts/page.tsx	2026-10-22 11:32:39.458962833 +0000
+@@ -0,0 +1,8 @@
++import AppFrame from "@/components/app-frame";
++import TransfersView from "@/components/transfers-view";
++
++export const dynamic = "force-dynamic";
++
++export default function Page() {
++  return <AppFrame permission="transfers.view" render={(role) => <TransfersView role={role} />} />;
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/app-shell.tsx Gestion_de_Stock-main/components/app-shell.tsx
+--- orig/Gestion_de_Stock-main/components/app-shell.tsx	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/components/app-shell.tsx	2026-10-22 11:32:42.969903185 +0000
+@@ -5,7 +5,7 @@
+ import { useEffect, useState } from "react";
+ import {
+   Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
+-  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, X
++  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, ArrowRightLeft, Warehouse, X
+ } from "lucide-react";
+ import { can, type Permission, type Role } from "@/lib/roles";
+ 
+@@ -15,6 +15,8 @@
+   { href: "/", label: "Tableau de bord", icon: LayoutDashboard },
+   { href: "/produits", label: "Produits", icon: Package },
+   { href: "/mouvements", label: "Mouvements", icon: ArrowLeftRight, permission: "movements.view" },
++  { href: "/entrepots", label: "Entrepôts", icon: Warehouse, permission: "warehouses.view" },
++  { href: "/transferts", label: "Transferts", icon: ArrowRightLeft, permission: "transfers.view" },
+   { href: "/ventes", label: "Ventes", icon: ShoppingCart, permission: "sales.view" },
+   { href: "/achats", label: "Achats", icon: ClipboardList, permission: "purchases.view" },
+   { href: "/clients", label: "Clients", icon: Users, permission: "customers.view" },
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/transfers-view.tsx Gestion_de_Stock-main/components/transfers-view.tsx
+--- orig/Gestion_de_Stock-main/components/transfers-view.tsx	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/components/transfers-view.tsx	2026-10-22 11:32:39.460835366 +0000
+@@ -0,0 +1,224 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import { Plus, Trash2 } from "lucide-react";
++import { api, useApi } from "@/lib/client";
++import { dateTime } from "@/lib/format";
++import { can, type Role } from "@/lib/roles";
++import { Alert, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui";
++
++type Status = "draft" | "shipped" | "received" | "cancelled";
++type Transfer = {
++  id: string; number: string; status: Status; note: string | null; createdAt: string;
++  source: string; destination: string; createdBy: string | null; lines: number; units: number;
++};
++type Warehouse = { id: string; name: string; code: string; status: "active" | "inactive" };
++type StockLine = { id: number; sku: string; name: string; available: number };
++type DetailLine = { id: string; sku: string; name: string; requested: number; shipped: number; received: number };
++
++const STATUS: Record<Status, { label: string; badge: string }> = {
++  draft: { label: "Brouillon", badge: "badge-muted" },
++  shipped: { label: "En transit", badge: "badge-warn" },
++  received: { label: "Reçu", badge: "badge-ok" },
++  cancelled: { label: "Annulé", badge: "badge-danger" }
++};
++
++function NewTransfer({ onClose, onSaved }: { onClose: () => void; onSaved: (message: string) => void }) {
++  const { data: whData } = useApi<{ warehouses: Warehouse[] }>("/api/warehouses");
++  const warehouses = (whData?.warehouses ?? []).filter((w) => w.status === "active");
++  const [sourceId, setSourceId] = useState("");
++  const [destinationId, setDestinationId] = useState("");
++  const [stock, setStock] = useState<StockLine[]>([]);
++  const [lines, setLines] = useState<{ productId: string; quantity: string }[]>([{ productId: "", quantity: "1" }]);
++  const [note, setNote] = useState("");
++  const [error, setError] = useState("");
++  const [saving, setSaving] = useState(false);
++
++  useEffect(() => {
++    setLines([{ productId: "", quantity: "1" }]);
++    setStock([]);
++    if (!sourceId) return;
++    api<{ stock: StockLine[] }>(`/api/warehouses/${sourceId}/stock`)
++      .then((data) => setStock(data.stock))
++      .catch((e) => setError(e instanceof Error ? e.message : "Chargement du stock impossible."));
++  }, [sourceId]);
++
++  function setLine(index: number, patch: Partial<{ productId: string; quantity: string }>) {
++    setLines((current) => current.map((line, i) => (i === index ? { ...line, ...patch } : line)));
++  }
++
++  async function submit(event: React.FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    setError("");
++    setSaving(true);
++    try {
++      const result = await api<{ number: string }>("/api/transfers", {
++        method: "POST",
++        body: JSON.stringify({
++          sourceId,
++          destinationId,
++          note,
++          lines: lines.map((l) => ({ productId: Number(l.productId), quantity: Number(l.quantity) }))
++        })
++      });
++      onSaved(`Transfert ${result.number} créé en brouillon.`);
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Création impossible.");
++    } finally {
++      setSaving(false);
++    }
++  }
++
++  const used = new Set(lines.map((l) => l.productId));
++
++  return (
++    <Modal title="Nouveau transfert" onClose={onClose}>
++      <form onSubmit={submit}>
++        {error && <Alert>{error}</Alert>}
++        <div className="form-grid" style={{ marginBottom: 14 }}>
++          <Field label="Entrepôt d’origine" span>
++            <select value={sourceId} onChange={(e) => setSourceId(e.target.value)} required>
++              <option value="">Choisir…</option>
++              {warehouses.map((w) => <option key={w.id} value={w.id} disabled={w.id === destinationId}>{w.name} ({w.code})</option>)}
++            </select>
++          </Field>
++          <Field label="Entrepôt de destination" span>
++            <select value={destinationId} onChange={(e) => setDestinationId(e.target.value)} required>
++              <option value="">Choisir…</option>
++              {warehouses.map((w) => <option key={w.id} value={w.id} disabled={w.id === sourceId}>{w.name} ({w.code})</option>)}
++            </select>
++          </Field>
++        </div>
++        <p className="hint" style={{ marginBottom: 8 }}>Produits à transférer</p>
++        {sourceId && stock.length === 0 && <p className="hint">Cet entrepôt ne contient aucun produit en stock.</p>}
++        {lines.map((line, index) => {
++          const selected = stock.find((s) => String(s.id) === line.productId);
++          return (
++            <div className="sale-line" key={index}>
++              <select value={line.productId} onChange={(e) => setLine(index, { productId: e.target.value })} required>
++                <option value="">Produit…</option>
++                {stock.map((s) => <option key={s.id} value={s.id} disabled={used.has(String(s.id)) && line.productId !== String(s.id)}>{s.name} ({s.available} dispo.)</option>)}
++              </select>
++              <input type="number" min={1} max={selected?.available} step={1} value={line.quantity} onChange={(e) => setLine(index, { quantity: e.target.value })} required aria-label="Quantité" />
++              <button type="button" className="icon-btn" onClick={() => setLines((c) => (c.length > 1 ? c.filter((_, i) => i !== index) : c))} aria-label="Retirer la ligne"><Trash2 size={18} /></button>
++            </div>
++          );
++        })}
++        <button type="button" className="btn btn-sm" onClick={() => setLines((c) => [...c, { productId: "", quantity: "1" }])} disabled={!sourceId}><Plus size={16} /> Ajouter un produit</button>
++        <div className="form-grid" style={{ marginTop: 14 }}>
++          <Field label="Note (facultatif)" span><input value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} /></Field>
++        </div>
++        <div className="form-actions">
++          <button type="button" className="btn" onClick={onClose}>Annuler</button>
++          <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Enregistrement…" : "Créer le brouillon"}</button>
++        </div>
++      </form>
++    </Modal>
++  );
++}
++
++function DetailModal({ transfer, role, onClose, onChanged }: { transfer: Transfer; role: Role; onClose: () => void; onChanged: (message: string) => void }) {
++  const [lines, setLines] = useState<DetailLine[] | null>(null);
++  const [error, setError] = useState("");
++  const [busy, setBusy] = useState(false);
++
++  useEffect(() => {
++    api<{ lines: DetailLine[] }>(`/api/transfers/${transfer.id}`)
++      .then((data) => setLines(data.lines))
++      .catch((e) => setError(e instanceof Error ? e.message : "Chargement impossible."));
++  }, [transfer.id]);
++
++  async function act(action: "ship" | "receive" | "cancel", message: string, confirmText: string) {
++    if (!window.confirm(confirmText)) return;
++    setBusy(true);
++    setError("");
++    try {
++      await api(`/api/transfers/${transfer.id}/${action}`, { method: "POST" });
++      onChanged(message);
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Action impossible.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  const canWrite = can(role, "transfers.write");
++  const canReceive = can(role, "transfers.receive");
++
++  return (
++    <Modal title={`Transfert ${transfer.number}`} onClose={onClose}>
++      {error && <Alert>{error}</Alert>}
++      <p className="hint" style={{ marginBottom: 10 }}>
++        {transfer.source} → {transfer.destination} · <span className={`badge ${STATUS[transfer.status].badge}`}>{STATUS[transfer.status].label}</span>
++      </p>
++      {transfer.note && <p style={{ marginBottom: 10 }}>{transfer.note}</p>}
++      {!lines && !error ? <Loading /> : (
++        <div className="table-card"><div className="table-wrap">
++          <table className="table">
++            <thead><tr><th>Produit</th><th className="num">Demandé</th><th className="num">Expédié</th><th className="num">Reçu</th></tr></thead>
++            <tbody>
++              {lines?.map((l) => (
++                <tr key={l.id}>
++                  <td data-label="Produit"><strong>{l.name}</strong> <small>{l.sku}</small></td>
++                  <td data-label="Demandé" className="num">{l.requested}</td>
++                  <td data-label="Expédié" className="num">{l.shipped}</td>
++                  <td data-label="Reçu" className="num">{l.received}</td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div></div>
++      )}
++      <div className="form-actions">
++        {transfer.status === "draft" && canWrite && <button type="button" className="btn btn-danger" disabled={busy} onClick={() => act("cancel", "Transfert annulé.", "Annuler ce brouillon ?")}>Annuler le transfert</button>}
++        {transfer.status === "draft" && canWrite && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => act("ship", "Transfert expédié : le stock est en transit.", "Expédier ? Le stock sera retiré de l’entrepôt d’origine.")}>Expédier</button>}
++        {transfer.status === "shipped" && canReceive && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => act("receive", "Transfert reçu : le stock est disponible à destination.", "Confirmer la réception complète ?")}>Marquer comme reçu</button>}
++        <button type="button" className="btn" onClick={onClose}>Fermer</button>
++      </div>
++    </Modal>
++  );
++}
++
++export default function TransfersView({ role }: { role: Role }) {
++  const { data, error, loading, reload } = useApi<{ transfers: Transfer[] }>("/api/transfers");
++  const [creating, setCreating] = useState(false);
++  const [opened, setOpened] = useState<Transfer | null>(null);
++  const [notice, setNotice] = useState("");
++  const list = data?.transfers ?? [];
++
++  return (
++    <>
++      <PageHeader title="Transferts" subtitle="Déplacez du stock d’un entrepôt à un autre, avec expédition puis réception.">
++        {can(role, "transfers.write") && <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={18} /> Nouveau transfert</button>}
++      </PageHeader>
++      {notice && <Alert kind="success">{notice}</Alert>}
++      {error && <Alert>{error}</Alert>}
++
++      {loading && !data ? <Loading /> : list.length === 0 ? (
++        <Empty>Aucun transfert pour l’instant.</Empty>
++      ) : (
++        <div className="table-card"><div className="table-wrap">
++          <table className="table">
++            <thead><tr><th>Numéro</th><th>Trajet</th><th>Statut</th><th className="num">Produits</th><th className="num">Unités</th><th>Date</th><th /></tr></thead>
++            <tbody>
++              {list.map((t) => (
++                <tr key={t.id}>
++                  <td data-label="Numéro"><strong>{t.number}</strong></td>
++                  <td data-label="Trajet">{t.source} → {t.destination}</td>
++                  <td data-label="Statut"><span className={`badge ${STATUS[t.status].badge}`}>{STATUS[t.status].label}</span></td>
++                  <td data-label="Produits" className="num">{t.lines}</td>
++                  <td data-label="Unités" className="num">{t.units}</td>
++                  <td data-label="Date">{dateTime(t.createdAt)}</td>
++                  <td className="actions"><button type="button" className="btn btn-sm" onClick={() => setOpened(t)}>Ouvrir</button></td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div></div>
++      )}
++
++      {creating && <NewTransfer onClose={() => setCreating(false)} onSaved={(message) => { setCreating(false); setNotice(message); void reload(); }} />}
++      {opened && <DetailModal transfer={opened} role={role} onClose={() => setOpened(null)} onChanged={(message) => { setOpened(null); setNotice(message); void reload(); }} />}
++    </>
++  );
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/warehouses-view.tsx Gestion_de_Stock-main/components/warehouses-view.tsx
+--- orig/Gestion_de_Stock-main/components/warehouses-view.tsx	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/components/warehouses-view.tsx	2026-10-22 11:32:39.459898473 +0000
+@@ -0,0 +1,137 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import { Plus } from "lucide-react";
++import { api, useApi } from "@/lib/client";
++import { can, type Role } from "@/lib/roles";
++import { Alert, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui";
++
++type Warehouse = { id: string; name: string; code: string; status: "active" | "inactive"; isDefault: boolean; products: number; units: number };
++type StockLine = { id: number; sku: string; name: string; onHand: number; available: number };
++
++function StockModal({ warehouse, onClose }: { warehouse: Warehouse; onClose: () => void }) {
++  const [lines, setLines] = useState<StockLine[] | null>(null);
++  const [error, setError] = useState("");
++
++  useEffect(() => {
++    api<{ stock: StockLine[] }>(`/api/warehouses/${warehouse.id}/stock`)
++      .then((data) => setLines(data.stock))
++      .catch((e) => setError(e instanceof Error ? e.message : "Chargement impossible."));
++  }, [warehouse.id]);
++
++  return (
++    <Modal title={`Stock : ${warehouse.name}`} onClose={onClose}>
++      {error && <Alert>{error}</Alert>}
++      {!lines && !error ? <Loading /> : lines && lines.length === 0 ? (
++        <Empty>Aucun produit en stock dans cet entrepôt.</Empty>
++      ) : (
++        <div className="table-card"><div className="table-wrap">
++          <table className="table">
++            <thead><tr><th>Produit</th><th>Référence</th><th className="num">En stock</th><th className="num">Disponible</th></tr></thead>
++            <tbody>
++              {lines?.map((l) => (
++                <tr key={l.id}>
++                  <td data-label="Produit"><strong>{l.name}</strong></td>
++                  <td data-label="Référence">{l.sku}</td>
++                  <td data-label="En stock" className="num">{l.onHand}</td>
++                  <td data-label="Disponible" className="num">{l.available}</td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div></div>
++      )}
++    </Modal>
++  );
++}
++
++export default function WarehousesView({ role }: { role: Role }) {
++  const { data, error, loading, reload } = useApi<{ warehouses: Warehouse[] }>("/api/warehouses");
++  const [editing, setEditing] = useState<Warehouse | "new" | null>(null);
++  const [viewing, setViewing] = useState<Warehouse | null>(null);
++  const [formError, setFormError] = useState("");
++  const [saving, setSaving] = useState(false);
++  const [notice, setNotice] = useState("");
++  const canWrite = can(role, "warehouses.write");
++  const list = data?.warehouses ?? [];
++  const current = editing && editing !== "new" ? editing : null;
++
++  async function save(event: React.FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    setFormError("");
++    setSaving(true);
++    const form = Object.fromEntries(new FormData(event.currentTarget).entries());
++    try {
++      if (current) await api(`/api/warehouses/${current.id}`, { method: "PATCH", body: JSON.stringify(form) });
++      else await api("/api/warehouses", { method: "POST", body: JSON.stringify(form) });
++      setEditing(null);
++      setNotice(current ? "Modifications enregistrées." : "Entrepôt créé.");
++      await reload();
++    } catch (e) {
++      setFormError(e instanceof Error ? e.message : "Enregistrement impossible.");
++    } finally {
++      setSaving(false);
++    }
++  }
++
++  return (
++    <>
++      <PageHeader title="Entrepôts" subtitle="Vos lieux de stockage et le stock qu’ils détiennent.">
++        {canWrite && <button type="button" className="btn btn-primary" onClick={() => { setFormError(""); setEditing("new"); }}><Plus size={18} /> Ajouter un entrepôt</button>}
++      </PageHeader>
++      {notice && <Alert kind="success">{notice}</Alert>}
++      {error && <Alert>{error}</Alert>}
++
++      {loading && !data ? <Loading /> : list.length === 0 ? (
++        <Empty>Aucun entrepôt.</Empty>
++      ) : (
++        <div className="table-card"><div className="table-wrap">
++          <table className="table">
++            <thead><tr><th>Nom</th><th>Code</th><th>Statut</th><th className="num">Produits</th><th className="num">Unités</th><th /></tr></thead>
++            <tbody>
++              {list.map((w) => (
++                <tr key={w.id}>
++                  <td data-label="Nom"><strong>{w.name}</strong>{w.isDefault && <> <span className="badge badge-muted">Principal</span></>}</td>
++                  <td data-label="Code">{w.code}</td>
++                  <td data-label="Statut"><span className={`badge ${w.status === "active" ? "badge-ok" : "badge-muted"}`}>{w.status === "active" ? "Actif" : "Inactif"}</span></td>
++                  <td data-label="Produits" className="num">{w.products}</td>
++                  <td data-label="Unités" className="num">{w.units}</td>
++                  <td className="actions">
++                    <button type="button" className="btn btn-sm" onClick={() => setViewing(w)}>Voir le stock</button>
++                    {canWrite && <button type="button" className="btn btn-sm" onClick={() => { setFormError(""); setEditing(w); }}>Modifier</button>}
++                  </td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div></div>
++      )}
++
++      {viewing && <StockModal warehouse={viewing} onClose={() => setViewing(null)} />}
++
++      {editing && (
++        <Modal title={current ? `Modifier : ${current.name}` : "Nouvel entrepôt"} onClose={() => setEditing(null)}>
++          <form onSubmit={save}>
++            {formError && <Alert>{formError}</Alert>}
++            <div className="form-grid">
++              <Field label="Nom" span><input name="name" required minLength={2} defaultValue={current?.name} /></Field>
++              <Field label="Code"><input name="code" required minLength={2} maxLength={20} defaultValue={current?.code} placeholder="DLA" /></Field>
++              {current && (
++                <Field label="Statut">
++                  <select name="status" defaultValue={current.status}>
++                    <option value="active">Actif</option>
++                    <option value="inactive">Inactif</option>
++                  </select>
++                </Field>
++              )}
++            </div>
++            <div className="form-actions">
++              <button type="button" className="btn" onClick={() => setEditing(null)}>Annuler</button>
++              <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
++            </div>
++          </form>
++        </Modal>
++      )}
++    </>
++  );
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0005_multi_company_rbac.sql Gestion_de_Stock-main/db/0005_multi_company_rbac.sql
+--- orig/Gestion_de_Stock-main/db/0005_multi_company_rbac.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0005_multi_company_rbac.sql	2026-10-21 07:59:29.388907131 +0000
+@@ -0,0 +1,163 @@
++-- Gestion de Stock: multi-entreprises + RBAC (phase 02 du cahier des charges).
++-- À exécuter UNE SEULE FOIS dans la base Neon, après 0000 → 0004. Testé sur une branche Neon avant production.
++-- Les données existantes sont rattachées à l'entreprise « Entreprise par défaut » (UUID fixe ...0001).
++CREATE TABLE companies (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  name text NOT NULL,
++  slug text NOT NULL UNIQUE,
++  currency char(3) NOT NULL DEFAULT 'XAF',
++  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','suspended','archived')),
++  settings jsonb NOT NULL DEFAULT '{}'::jsonb,
++  created_at timestamptz NOT NULL DEFAULT now(),
++  updated_at timestamptz NOT NULL DEFAULT now()
++);
++INSERT INTO companies (id, name, slug) VALUES ('00000000-0000-0000-0000-000000000001', 'Entreprise par défaut', 'default');
++
++CREATE TABLE permissions (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  code text NOT NULL UNIQUE,
++  description text
++);
++
++CREATE TABLE roles (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
++  name text NOT NULL,
++  is_system boolean NOT NULL DEFAULT false,
++  created_at timestamptz NOT NULL DEFAULT now(),
++  UNIQUE (company_id, name),
++  UNIQUE (id, company_id)
++);
++
++CREATE TABLE role_permissions (
++  role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
++  permission_id uuid NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
++  PRIMARY KEY (role_id, permission_id)
++);
++
++CREATE TABLE company_memberships (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
++  user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++  status text NOT NULL DEFAULT 'active' CHECK (status IN ('invited','active','suspended')),
++  created_at timestamptz NOT NULL DEFAULT now(),
++  UNIQUE (company_id, user_id),
++  UNIQUE (id, company_id)
++);
++
++CREATE TABLE membership_roles (
++  company_id uuid NOT NULL,
++  membership_id uuid NOT NULL,
++  role_id uuid NOT NULL,
++  PRIMARY KEY (membership_id, role_id),
++  FOREIGN KEY (membership_id, company_id) REFERENCES company_memberships(id, company_id) ON DELETE CASCADE,
++  FOREIGN KEY (role_id, company_id) REFERENCES roles(id, company_id) ON DELETE CASCADE
++);
++
++INSERT INTO permissions (code) VALUES
++('companies.manage'),('users.manage'),('roles.manage'),('audit.read'),
++('products.read'),('products.create'),('products.update'),('products.archive'),
++('warehouses.read'),('warehouses.manage'),
++('inventory.read'),('inventory.adjust'),('inventory.transfer.create'),('inventory.transfer.ship'),
++('inventory.transfer.receive'),('inventory.count'),('inventory.count.approve'),
++('suppliers.read'),('suppliers.manage'),
++('purchases.read'),('purchases.create'),('purchases.submit'),('purchases.approve'),('purchases.receive'),('purchases.cancel'),
++('customers.read'),('customers.manage'),
++('sales.read'),('sales.create'),('sales.validate'),('sales.discount.override'),('sales.return'),('sales.refund'),
++('payments.read'),('payments.record'),('payments.reverse'),
++('expenses.read'),('expenses.create'),('expenses.approve'),
++('reports.stock.read'),('reports.finance.read');
++
++INSERT INTO roles (company_id, name, is_system) VALUES
++('00000000-0000-0000-0000-000000000001','Administrateur entreprise',true),
++('00000000-0000-0000-0000-000000000001','Directeur',true),
++('00000000-0000-0000-0000-000000000001','Gestionnaire de stock',true),
++('00000000-0000-0000-0000-000000000001','Responsable achats',true),
++('00000000-0000-0000-0000-000000000001','Vendeur / Caissier',true),
++('00000000-0000-0000-0000-000000000001','Comptable',true),
++('00000000-0000-0000-0000-000000000001','Auditeur',true);
++
++INSERT INTO role_permissions (role_id, permission_id)
++SELECT r.id, p.id
++FROM roles r
++JOIN (VALUES
++  ('Administrateur entreprise', '.*'),
++  ('Directeur', '\.read$|\.approve$|^sales\.validate$|^payments\.reverse$'),
++  ('Gestionnaire de stock', '^(products\.(read|create|update|archive)|warehouses\.read|inventory\..*|reports\.stock\.read|suppliers\.read)$'),
++  ('Responsable achats', '^(suppliers\..*|purchases\..*|products\.read|inventory\.read|warehouses\.read|reports\.stock\.read)$'),
++  ('Vendeur / Caissier', '^(products\.read|inventory\.read|customers\..*|sales\.(read|create|validate|return)|payments\.(read|record))$'),
++  ('Comptable', '^(payments\..*|expenses\..*|sales\.(read|refund)|purchases\.read|customers\.read|suppliers\.read|reports\..*)$'),
++  ('Auditeur', '\.read$')
++) AS t(name, pattern) ON t.name = r.name
++JOIN permissions p ON p.code ~ t.pattern;
++
++INSERT INTO company_memberships (company_id, user_id, status)
++SELECT '00000000-0000-0000-0000-000000000001', u.id, CASE WHEN u.active THEN 'active' ELSE 'suspended' END FROM users u;
++
++INSERT INTO membership_roles (company_id, membership_id, role_id)
++SELECT m.company_id, m.id, r.id
++FROM company_memberships m
++JOIN users u ON u.id = m.user_id
++JOIN roles r ON r.company_id = m.company_id AND r.name = CASE u.role
++  WHEN 'super_admin' THEN 'Administrateur entreprise'
++  WHEN 'admin' THEN 'Administrateur entreprise'
++  WHEN 'manager' THEN 'Directeur'
++  WHEN 'storekeeper' THEN 'Gestionnaire de stock'
++  WHEN 'seller' THEN 'Vendeur / Caissier' END;
++
++-- company_id sur les tables métier. Le DEFAULT est TRANSITOIRE : il est retiré par 0008 une fois le nouveau code déployé.
++ALTER TABLE products ADD COLUMN company_id uuid REFERENCES companies(id);
++UPDATE products SET company_id = '00000000-0000-0000-0000-000000000001';
++ALTER TABLE products ALTER COLUMN company_id SET NOT NULL;
++ALTER TABLE products ALTER COLUMN company_id SET DEFAULT '00000000-0000-0000-0000-000000000001';
++CREATE INDEX products_company_idx ON products (company_id);
++ALTER TABLE products ADD CONSTRAINT products_id_company_key UNIQUE (id, company_id);
++
++ALTER TABLE suppliers ADD COLUMN company_id uuid REFERENCES companies(id);
++UPDATE suppliers SET company_id = '00000000-0000-0000-0000-000000000001';
++ALTER TABLE suppliers ALTER COLUMN company_id SET NOT NULL;
++ALTER TABLE suppliers ALTER COLUMN company_id SET DEFAULT '00000000-0000-0000-0000-000000000001';
++CREATE INDEX suppliers_company_idx ON suppliers (company_id);
++ALTER TABLE suppliers ADD CONSTRAINT suppliers_id_company_key UNIQUE (id, company_id);
++
++ALTER TABLE customers ADD COLUMN company_id uuid REFERENCES companies(id);
++UPDATE customers SET company_id = '00000000-0000-0000-0000-000000000001';
++ALTER TABLE customers ALTER COLUMN company_id SET NOT NULL;
++ALTER TABLE customers ALTER COLUMN company_id SET DEFAULT '00000000-0000-0000-0000-000000000001';
++CREATE INDEX customers_company_idx ON customers (company_id);
++ALTER TABLE customers ADD CONSTRAINT customers_id_company_key UNIQUE (id, company_id);
++
++ALTER TABLE purchase_orders ADD COLUMN company_id uuid REFERENCES companies(id);
++UPDATE purchase_orders SET company_id = '00000000-0000-0000-0000-000000000001';
++ALTER TABLE purchase_orders ALTER COLUMN company_id SET NOT NULL;
++ALTER TABLE purchase_orders ALTER COLUMN company_id SET DEFAULT '00000000-0000-0000-0000-000000000001';
++CREATE INDEX purchase_orders_company_idx ON purchase_orders (company_id);
++ALTER TABLE purchase_orders ADD CONSTRAINT purchase_orders_id_company_key UNIQUE (id, company_id);
++
++ALTER TABLE sales ADD COLUMN company_id uuid REFERENCES companies(id);
++UPDATE sales SET company_id = '00000000-0000-0000-0000-000000000001';
++ALTER TABLE sales ALTER COLUMN company_id SET NOT NULL;
++ALTER TABLE sales ALTER COLUMN company_id SET DEFAULT '00000000-0000-0000-0000-000000000001';
++CREATE INDEX sales_company_idx ON sales (company_id);
++ALTER TABLE sales ADD CONSTRAINT sales_id_company_key UNIQUE (id, company_id);
++
++ALTER TABLE stock_movements ADD COLUMN company_id uuid REFERENCES companies(id);
++UPDATE stock_movements SET company_id = '00000000-0000-0000-0000-000000000001';
++ALTER TABLE stock_movements ALTER COLUMN company_id SET NOT NULL;
++ALTER TABLE stock_movements ALTER COLUMN company_id SET DEFAULT '00000000-0000-0000-0000-000000000001';
++CREATE INDEX stock_movements_company_idx ON stock_movements (company_id);
++ALTER TABLE stock_movements ADD CONSTRAINT stock_movements_id_company_key UNIQUE (id, company_id);
++
++ALTER TABLE audit_log ADD COLUMN company_id uuid REFERENCES companies(id);
++UPDATE audit_log SET company_id = '00000000-0000-0000-0000-000000000001';
++CREATE INDEX audit_log_company_idx ON audit_log (company_id, created_at DESC);
++
++-- SKU unique par entreprise (et non plus global).
++ALTER TABLE products DROP CONSTRAINT products_sku_key;
++ALTER TABLE products ADD CONSTRAINT products_company_sku_key UNIQUE (company_id, sku);
++
++-- Clés étrangères composites : impossible de relier des données de deux entreprises différentes.
++ALTER TABLE stock_movements ADD CONSTRAINT stock_movements_product_company_fk FOREIGN KEY (product_id, company_id) REFERENCES products(id, company_id);
++ALTER TABLE stock_movements ADD CONSTRAINT stock_movements_supplier_company_fk FOREIGN KEY (supplier_id, company_id) REFERENCES suppliers(id, company_id);
++ALTER TABLE sales ADD CONSTRAINT sales_customer_company_fk FOREIGN KEY (customer_id, company_id) REFERENCES customers(id, company_id);
++ALTER TABLE purchase_orders ADD CONSTRAINT purchase_orders_supplier_company_fk FOREIGN KEY (supplier_id, company_id) REFERENCES suppliers(id, company_id);
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0006_warehouses_balances.sql Gestion_de_Stock-main/db/0006_warehouses_balances.sql
+--- orig/Gestion_de_Stock-main/db/0006_warehouses_balances.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0006_warehouses_balances.sql	2026-10-21 07:59:29.389738063 +0000
+@@ -0,0 +1,64 @@
++-- Gestion de Stock: entrepôts, unités, catégories et soldes par entrepôt (phase 03, première partie).
++-- À exécuter après 0005. products.quantity est conservée (stock de l'entrepôt par défaut) ; voir 0007 pour la synchronisation.
++CREATE TABLE warehouses (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
++  name text NOT NULL,
++  code text NOT NULL,
++  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
++  is_default boolean NOT NULL DEFAULT false,
++  created_at timestamptz NOT NULL DEFAULT now(),
++  UNIQUE (company_id, code),
++  UNIQUE (id, company_id)
++);
++CREATE UNIQUE INDEX warehouses_one_default_idx ON warehouses (company_id) WHERE is_default;
++
++CREATE TABLE units (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
++  name text NOT NULL,
++  symbol text NOT NULL,
++  precision smallint NOT NULL DEFAULT 0 CHECK (precision BETWEEN 0 AND 4),
++  UNIQUE (company_id, symbol),
++  UNIQUE (id, company_id)
++);
++
++CREATE TABLE categories (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
++  parent_id uuid,
++  name text NOT NULL,
++  UNIQUE (company_id, name),
++  UNIQUE (id, company_id),
++  FOREIGN KEY (parent_id, company_id) REFERENCES categories(id, company_id)
++);
++
++ALTER TABLE products ADD COLUMN category_id uuid, ADD COLUMN base_unit_id uuid;
++ALTER TABLE products ADD CONSTRAINT products_category_company_fk FOREIGN KEY (category_id, company_id) REFERENCES categories(id, company_id);
++ALTER TABLE products ADD CONSTRAINT products_unit_company_fk FOREIGN KEY (base_unit_id, company_id) REFERENCES units(id, company_id);
++
++CREATE TABLE stock_balances (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
++  warehouse_id uuid NOT NULL,
++  product_id bigint NOT NULL,
++  quantity_on_hand numeric(19,4) NOT NULL DEFAULT 0 CHECK (quantity_on_hand >= 0),
++  quantity_reserved numeric(19,4) NOT NULL DEFAULT 0 CHECK (quantity_reserved >= 0),
++  updated_at timestamptz NOT NULL DEFAULT now(),
++  UNIQUE (company_id, warehouse_id, product_id),
++  CHECK (quantity_reserved <= quantity_on_hand),
++  FOREIGN KEY (warehouse_id, company_id) REFERENCES warehouses(id, company_id),
++  FOREIGN KEY (product_id, company_id) REFERENCES products(id, company_id)
++);
++CREATE INDEX stock_balances_product_idx ON stock_balances (company_id, product_id);
++
++ALTER TABLE stock_movements ADD COLUMN warehouse_id uuid, ADD COLUMN unit_cost numeric(19,4), ADD COLUMN source_type text, ADD COLUMN source_id text;
++ALTER TABLE stock_movements ADD CONSTRAINT stock_movements_warehouse_company_fk FOREIGN KEY (warehouse_id, company_id) REFERENCES warehouses(id, company_id);
++
++INSERT INTO warehouses (company_id, name, code, is_default) SELECT id, 'Entrepôt principal', 'MAIN', true FROM companies;
++INSERT INTO units (company_id, name, symbol, precision) SELECT id, 'Pièce', 'pc', 0 FROM companies;
++INSERT INTO categories (company_id, name) SELECT DISTINCT company_id, btrim(category) FROM products WHERE category IS NOT NULL AND btrim(category) <> '';
++UPDATE products p SET category_id = c.id FROM categories c WHERE c.company_id = p.company_id AND c.name = btrim(p.category);
++UPDATE products p SET base_unit_id = u.id FROM units u WHERE u.company_id = p.company_id AND u.symbol = 'pc';
++INSERT INTO stock_balances (company_id, warehouse_id, product_id, quantity_on_hand) SELECT p.company_id, w.id, p.id, p.quantity FROM products p JOIN warehouses w ON w.company_id = p.company_id AND w.is_default;
++UPDATE stock_movements m SET warehouse_id = w.id FROM warehouses w WHERE w.company_id = m.company_id AND w.is_default;
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0007_sync_triggers.sql Gestion_de_Stock-main/db/0007_sync_triggers.sql
+--- orig/Gestion_de_Stock-main/db/0007_sync_triggers.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0007_sync_triggers.sql	2026-10-21 07:59:29.390522733 +0000
+@@ -0,0 +1,31 @@
++-- Gestion de Stock: synchronisation transitoire de stock_balances et index d'appartenance.
++-- À exécuter après 0006 (une instruction à la fois dans le SQL Editor si nécessaire).
++-- Tant que products.quantity reste la quantité de l'entrepôt par défaut, chaque modification met à jour son solde.
++CREATE OR REPLACE FUNCTION sync_stock_balance() RETURNS trigger LANGUAGE plpgsql AS $$
++BEGIN
++  INSERT INTO stock_balances (company_id, warehouse_id, product_id, quantity_on_hand)
++  SELECT NEW.company_id, w.id, NEW.id, NEW.quantity
++  FROM warehouses w WHERE w.company_id = NEW.company_id AND w.is_default
++  ON CONFLICT (company_id, warehouse_id, product_id)
++  DO UPDATE SET quantity_on_hand = EXCLUDED.quantity_on_hand, updated_at = now();
++  RETURN NULL;
++END
++$$;
++
++CREATE TRIGGER products_sync_balance AFTER INSERT OR UPDATE OF quantity ON products
++  FOR EACH ROW EXECUTE FUNCTION sync_stock_balance();
++
++-- Un mouvement sans entrepôt explicite est rattaché à l'entrepôt par défaut de son entreprise.
++CREATE OR REPLACE FUNCTION set_movement_warehouse() RETURNS trigger LANGUAGE plpgsql AS $$
++BEGIN
++  IF NEW.warehouse_id IS NULL THEN
++    SELECT id INTO NEW.warehouse_id FROM warehouses WHERE company_id = NEW.company_id AND is_default;
++  END IF;
++  RETURN NEW;
++END
++$$;
++
++CREATE TRIGGER stock_movements_default_wh BEFORE INSERT ON stock_movements
++  FOR EACH ROW EXECUTE FUNCTION set_movement_warehouse();
++
++CREATE INDEX IF NOT EXISTS company_memberships_user_idx ON company_memberships (user_id);
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0008_drop_transitional_defaults.sql Gestion_de_Stock-main/db/0008_drop_transitional_defaults.sql
+--- orig/Gestion_de_Stock-main/db/0008_drop_transitional_defaults.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0008_drop_transitional_defaults.sql	2026-10-21 07:59:29.391291926 +0000
+@@ -0,0 +1,9 @@
++-- Gestion de Stock: retire les valeurs par défaut transitoires de company_id.
++-- À exécuter UNIQUEMENT après le déploiement du code qui fournit company_id à chaque insertion.
++-- Ensuite, tout oubli de company_id provoque une erreur au lieu d'écrire silencieusement dans l'entreprise par défaut.
++ALTER TABLE products ALTER COLUMN company_id DROP DEFAULT;
++ALTER TABLE suppliers ALTER COLUMN company_id DROP DEFAULT;
++ALTER TABLE customers ALTER COLUMN company_id DROP DEFAULT;
++ALTER TABLE purchase_orders ALTER COLUMN company_id DROP DEFAULT;
++ALTER TABLE sales ALTER COLUMN company_id DROP DEFAULT;
++ALTER TABLE stock_movements ALTER COLUMN company_id DROP DEFAULT;
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0009_settings_to_company.sql Gestion_de_Stock-main/db/0009_settings_to_company.sql
+--- orig/Gestion_de_Stock-main/db/0009_settings_to_company.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0009_settings_to_company.sql	2026-10-21 08:01:09.564539793 +0000
+@@ -0,0 +1,7 @@
++-- Gestion de Stock: les paramètres deviennent propres à chaque entreprise (companies.settings, jsonb).
++-- À exécuter après 0005. Recopie les anciens paramètres de la table settings dans l'entreprise par défaut.
++-- La table settings est conservée (ne plus l'utiliser) ; elle pourra être supprimée plus tard.
++UPDATE companies
++SET settings = settings || COALESCE((SELECT jsonb_object_agg(key, value) FROM settings), '{}'::jsonb),
++    updated_at = now()
++WHERE id = '00000000-0000-0000-0000-000000000001';
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0010_phase3_stock_foundations.sql Gestion_de_Stock-main/db/0010_phase3_stock_foundations.sql
+--- orig/Gestion_de_Stock-main/db/0010_phase3_stock_foundations.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0010_phase3_stock_foundations.sql	2026-10-22 06:28:01.360865911 +0000
+@@ -0,0 +1,211 @@
++-- 0010 : Phase 03 du cahier des charges (catalogue et stock) + tables transversales.
++-- Migration ADDITIVE uniquement : aucune table ni colonne existante n'est modifiée ou supprimée,
++-- donc sans risque pour le code déjà en production. Idempotente (peut être rejouée).
++
++-- ---------- Catalogue ----------
++CREATE TABLE IF NOT EXISTS brands (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  name text NOT NULL CHECK (length(btrim(name)) > 0),
++  UNIQUE (company_id, name),
++  UNIQUE (id, company_id)
++);
++
++CREATE TABLE IF NOT EXISTS locations (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  warehouse_id uuid NOT NULL,
++  parent_id uuid,
++  code text NOT NULL CHECK (length(btrim(code)) > 0),
++  name text,
++  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
++  UNIQUE (id, company_id),
++  UNIQUE (company_id, warehouse_id, code),
++  FOREIGN KEY (warehouse_id, company_id) REFERENCES warehouses(id, company_id),
++  FOREIGN KEY (parent_id, company_id) REFERENCES locations(id, company_id)
++);
++
++CREATE TABLE IF NOT EXISTS product_barcodes (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  product_id bigint NOT NULL,
++  barcode text NOT NULL CHECK (length(btrim(barcode)) > 0),
++  unit_id uuid,
++  created_at timestamptz NOT NULL DEFAULT now(),
++  UNIQUE (company_id, barcode),
++  FOREIGN KEY (product_id, company_id) REFERENCES products(id, company_id),
++  FOREIGN KEY (unit_id, company_id) REFERENCES units(id, company_id)
++);
++CREATE INDEX IF NOT EXISTS product_barcodes_product_idx ON product_barcodes (company_id, product_id);
++
++CREATE TABLE IF NOT EXISTS product_prices (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  product_id bigint NOT NULL,
++  price_type text NOT NULL CHECK (price_type IN ('sale','purchase')),
++  amount numeric(19,4) NOT NULL CHECK (amount >= 0),
++  valid_from timestamptz NOT NULL DEFAULT now(),
++  created_by bigint REFERENCES users(id),
++  FOREIGN KEY (product_id, company_id) REFERENCES products(id, company_id)
++);
++CREATE INDEX IF NOT EXISTS product_prices_lookup_idx ON product_prices (company_id, product_id, price_type, valid_from DESC);
++
++-- ---------- Transferts entre entrepôts ----------
++CREATE TABLE IF NOT EXISTS stock_transfers (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  transfer_number text NOT NULL,
++  source_warehouse_id uuid NOT NULL,
++  destination_warehouse_id uuid NOT NULL,
++  status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','shipped','received','cancelled')),
++  note text,
++  created_by bigint REFERENCES users(id),
++  shipped_at timestamptz,
++  received_at timestamptz,
++  created_at timestamptz NOT NULL DEFAULT now(),
++  CHECK (source_warehouse_id <> destination_warehouse_id),
++  UNIQUE (id, company_id),
++  UNIQUE (company_id, transfer_number),
++  FOREIGN KEY (source_warehouse_id, company_id) REFERENCES warehouses(id, company_id),
++  FOREIGN KEY (destination_warehouse_id, company_id) REFERENCES warehouses(id, company_id)
++);
++
++CREATE TABLE IF NOT EXISTS stock_transfer_lines (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  transfer_id uuid NOT NULL,
++  product_id bigint NOT NULL,
++  quantity_requested numeric(19,4) NOT NULL CHECK (quantity_requested > 0),
++  quantity_shipped numeric(19,4) NOT NULL DEFAULT 0 CHECK (quantity_shipped >= 0),
++  quantity_received numeric(19,4) NOT NULL DEFAULT 0 CHECK (quantity_received >= 0),
++  CHECK (quantity_received <= quantity_shipped),
++  FOREIGN KEY (transfer_id, company_id) REFERENCES stock_transfers(id, company_id) ON DELETE CASCADE,
++  FOREIGN KEY (product_id, company_id) REFERENCES products(id, company_id)
++);
++CREATE INDEX IF NOT EXISTS stock_transfer_lines_transfer_idx ON stock_transfer_lines (transfer_id);
++
++-- ---------- Inventaires physiques ----------
++CREATE TABLE IF NOT EXISTS inventory_counts (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  count_number text NOT NULL,
++  warehouse_id uuid NOT NULL,
++  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','submitted','approved','cancelled')),
++  created_by bigint REFERENCES users(id),
++  approved_by bigint REFERENCES users(id),
++  created_at timestamptz NOT NULL DEFAULT now(),
++  approved_at timestamptz,
++  UNIQUE (id, company_id),
++  UNIQUE (company_id, count_number),
++  FOREIGN KEY (warehouse_id, company_id) REFERENCES warehouses(id, company_id)
++);
++
++CREATE TABLE IF NOT EXISTS inventory_count_lines (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  count_id uuid NOT NULL,
++  product_id bigint NOT NULL,
++  expected_quantity numeric(19,4) NOT NULL CHECK (expected_quantity >= 0),
++  counted_quantity numeric(19,4) CHECK (counted_quantity >= 0),
++  UNIQUE (count_id, product_id),
++  FOREIGN KEY (count_id, company_id) REFERENCES inventory_counts(id, company_id) ON DELETE CASCADE,
++  FOREIGN KEY (product_id, company_id) REFERENCES products(id, company_id)
++);
++
++-- ---------- Réservations ----------
++CREATE TABLE IF NOT EXISTS stock_reservations (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  product_id bigint NOT NULL,
++  warehouse_id uuid NOT NULL,
++  document_type text NOT NULL,
++  document_id text NOT NULL,
++  quantity numeric(19,4) NOT NULL CHECK (quantity > 0),
++  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','released','consumed')),
++  created_at timestamptz NOT NULL DEFAULT now(),
++  FOREIGN KEY (product_id, company_id) REFERENCES products(id, company_id),
++  FOREIGN KEY (warehouse_id, company_id) REFERENCES warehouses(id, company_id)
++);
++CREATE INDEX IF NOT EXISTS stock_reservations_active_idx ON stock_reservations (company_id, product_id, warehouse_id) WHERE status = 'active';
++
++-- ---------- Transversal : numérotation, idempotence, outbox, notifications ----------
++CREATE TABLE IF NOT EXISTS document_sequences (
++  company_id uuid NOT NULL REFERENCES companies(id),
++  document_type text NOT NULL,
++  period text NOT NULL DEFAULT '',
++  next_value bigint NOT NULL DEFAULT 1 CHECK (next_value > 0),
++  PRIMARY KEY (company_id, document_type, period)
++);
++
++CREATE TABLE IF NOT EXISTS idempotency_keys (
++  company_id uuid NOT NULL REFERENCES companies(id),
++  key text NOT NULL CHECK (length(key) BETWEEN 8 AND 200),
++  operation text NOT NULL,
++  result_reference text,
++  created_at timestamptz NOT NULL DEFAULT now(),
++  PRIMARY KEY (company_id, key, operation)
++);
++
++CREATE TABLE IF NOT EXISTS outbox_events (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  event_type text NOT NULL,
++  payload jsonb NOT NULL DEFAULT '{}',
++  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','done','failed')),
++  attempts int NOT NULL DEFAULT 0,
++  next_attempt_at timestamptz NOT NULL DEFAULT now(),
++  created_at timestamptz NOT NULL DEFAULT now()
++);
++CREATE INDEX IF NOT EXISTS outbox_pending_idx ON outbox_events (next_attempt_at) WHERE status IN ('pending','failed');
++
++CREATE TABLE IF NOT EXISTS notifications (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  user_id bigint REFERENCES users(id),
++  type text NOT NULL,
++  payload jsonb NOT NULL DEFAULT '{}',
++  read_at timestamptz,
++  created_at timestamptz NOT NULL DEFAULT now(),
++  UNIQUE (id, company_id)
++);
++CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications (company_id, user_id, created_at DESC);
++
++CREATE TABLE IF NOT EXISTS notification_deliveries (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  notification_id uuid NOT NULL,
++  channel text NOT NULL CHECK (channel IN ('in_app','email','sms','whatsapp')),
++  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sent','failed')),
++  attempts int NOT NULL DEFAULT 0,
++  last_error text,
++  FOREIGN KEY (notification_id, company_id) REFERENCES notifications(id, company_id) ON DELETE CASCADE
++);
++
++-- ---------- Catalogue complet des permissions (section 4.2) ----------
++INSERT INTO permissions (code, description) VALUES
++ ('products.read','Consulter les produits'),('products.create','Créer des produits'),('products.update','Modifier des produits'),('products.archive','Archiver des produits'),
++ ('inventory.read','Consulter les stocks'),('inventory.adjust','Ajuster le stock'),('inventory.transfer.create','Créer un transfert'),
++ ('inventory.transfer.ship','Expédier un transfert'),('inventory.transfer.receive','Réceptionner un transfert'),
++ ('inventory.count','Compter un inventaire'),('inventory.count.approve','Approuver un inventaire'),
++ ('purchases.create','Créer une commande d''achat'),('purchases.submit','Soumettre une commande'),('purchases.approve','Approuver une commande'),
++ ('purchases.receive','Réceptionner une commande'),('purchases.cancel','Annuler une commande'),
++ ('sales.create','Créer une vente'),('sales.validate','Valider une vente'),('sales.discount.override','Accorder des remises hors règle'),
++ ('sales.return','Enregistrer un retour client'),('sales.refund','Rembourser un client'),
++ ('payments.record','Enregistrer un paiement'),('payments.reverse','Contrepasser un paiement'),
++ ('expenses.create','Créer une dépense'),('expenses.approve','Approuver une dépense'),
++ ('reports.stock.read','Consulter les rapports de stock'),('reports.finance.read','Consulter les rapports financiers'),
++ ('users.manage','Gérer les utilisateurs'),('roles.manage','Gérer les rôles'),('audit.read','Consulter le journal d''audit')
++ON CONFLICT (code) DO NOTHING;
++
++-- Rôles système : l'administrateur d'entreprise reçoit tout ; les autres rôles reçoivent leur périmètre.
++INSERT INTO role_permissions (role_id, permission_id)
++SELECT r.id, p.id FROM roles r JOIN permissions p ON (
++  (r.name = 'Administrateur entreprise')
++  OR (r.name = 'Directeur' AND p.code IN ('products.read','inventory.read','purchases.approve','sales.validate','sales.discount.override','payments.reverse','expenses.approve','inventory.count.approve','reports.stock.read','reports.finance.read','audit.read'))
++  OR (r.name = 'Gestionnaire de stock' AND (p.code LIKE 'products.%' OR p.code LIKE 'inventory.%' OR p.code = 'reports.stock.read'))
++  OR (r.name = 'Responsable achats' AND (p.code LIKE 'purchases.%' OR p.code IN ('products.read','inventory.read')))
++  OR (r.name = 'Vendeur / Caissier' AND p.code IN ('products.read','inventory.read','sales.create','sales.validate','payments.record'))
++  OR (r.name = 'Comptable' AND p.code IN ('payments.record','payments.reverse','expenses.create','expenses.approve','reports.finance.read','products.read'))
++  OR (r.name = 'Auditeur' AND p.code IN ('products.read','inventory.read','reports.stock.read','reports.finance.read','audit.read'))
++) WHERE r.is_system
++ON CONFLICT DO NOTHING;
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0011_transfers_functions.sql Gestion_de_Stock-main/db/0011_transfers_functions.sql
+--- orig/Gestion_de_Stock-main/db/0011_transfers_functions.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0011_transfers_functions.sql	2026-10-22 11:30:30.640406476 +0000
+@@ -0,0 +1,99 @@
++-- 0011 : transferts entre entrepôts.
++-- 1) Le stock total d'un produit (products.quantity) reste la somme « entrepôts + en transit ».
++--    Le déclencheur applique donc la VARIATION de products.quantity à l'entrepôt par défaut
++--    (l'ancienne version recopiait le total, ce qui devient faux dès qu'un 2e entrepôt a du stock).
++-- 2) Deux nouveaux types de mouvement : transfer_out / transfer_in.
++-- 3) Fonctions atomiques ship_transfer / receive_transfer / cancel_transfer.
++
++CREATE OR REPLACE FUNCTION sync_stock_balance() RETURNS trigger LANGUAGE plpgsql AS $$
++DECLARE
++  delta numeric;
++  wh uuid;
++BEGIN
++  IF TG_OP = 'INSERT' THEN
++    delta := NEW.quantity;
++  ELSE
++    delta := NEW.quantity - OLD.quantity;
++  END IF;
++  IF delta = 0 THEN RETURN NULL; END IF;
++  SELECT id INTO wh FROM warehouses WHERE company_id = NEW.company_id AND is_default;
++  IF wh IS NULL THEN RETURN NULL; END IF;
++  -- UPDATE d'abord : un INSERT ... ON CONFLICT contrôle la ligne proposée (variation négative) avant le conflit.
++  UPDATE stock_balances SET quantity_on_hand = quantity_on_hand + delta, updated_at = now()
++   WHERE company_id = NEW.company_id AND warehouse_id = wh AND product_id = NEW.id;
++  IF NOT FOUND THEN
++    INSERT INTO stock_balances (company_id, warehouse_id, product_id, quantity_on_hand)
++    VALUES (NEW.company_id, wh, NEW.id, delta);
++  END IF;
++  RETURN NULL;
++END
++$$;
++
++ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS stock_movements_movement_type_check;
++ALTER TABLE stock_movements ADD CONSTRAINT stock_movements_movement_type_check
++  CHECK (movement_type::text = ANY (ARRAY['in','out','adjustment','transfer_out','transfer_in']));
++
++CREATE OR REPLACE FUNCTION ship_transfer(p_company uuid, p_transfer uuid, p_user bigint) RETURNS void
++LANGUAGE plpgsql AS $$
++DECLARE
++  t stock_transfers%ROWTYPE;
++  l RECORD;
++BEGIN
++  SELECT * INTO t FROM stock_transfers WHERE id = p_transfer AND company_id = p_company FOR UPDATE;
++  IF NOT FOUND THEN RAISE EXCEPTION 'TRANSFER_NOT_FOUND'; END IF;
++  IF t.status <> 'draft' THEN RAISE EXCEPTION 'TRANSFER_BAD_STATUS'; END IF;
++  IF NOT EXISTS (SELECT 1 FROM stock_transfer_lines WHERE transfer_id = p_transfer AND company_id = p_company) THEN
++    RAISE EXCEPTION 'TRANSFER_EMPTY';
++  END IF;
++  FOR l IN SELECT id, product_id, quantity_requested FROM stock_transfer_lines
++           WHERE transfer_id = p_transfer AND company_id = p_company ORDER BY product_id LOOP
++    UPDATE stock_balances
++       SET quantity_on_hand = quantity_on_hand - l.quantity_requested, updated_at = now()
++     WHERE company_id = p_company AND warehouse_id = t.source_warehouse_id AND product_id = l.product_id
++       AND quantity_on_hand - quantity_reserved >= l.quantity_requested;
++    IF NOT FOUND THEN RAISE EXCEPTION 'INSUFFICIENT_STOCK:%', l.product_id; END IF;
++    UPDATE stock_transfer_lines SET quantity_shipped = l.quantity_requested WHERE id = l.id;
++    INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id, warehouse_id, source_type, source_id)
++    VALUES (p_company, l.product_id, 'transfer_out', l.quantity_requested::int, 'Transfert ' || t.transfer_number, p_user, t.source_warehouse_id, 'transfer', p_transfer::text);
++  END LOOP;
++  UPDATE stock_transfers SET status = 'shipped', shipped_at = now() WHERE id = p_transfer;
++END
++$$;
++
++CREATE OR REPLACE FUNCTION receive_transfer(p_company uuid, p_transfer uuid, p_user bigint) RETURNS void
++LANGUAGE plpgsql AS $$
++DECLARE
++  t stock_transfers%ROWTYPE;
++  l RECORD;
++  remaining numeric;
++BEGIN
++  SELECT * INTO t FROM stock_transfers WHERE id = p_transfer AND company_id = p_company FOR UPDATE;
++  IF NOT FOUND THEN RAISE EXCEPTION 'TRANSFER_NOT_FOUND'; END IF;
++  IF t.status <> 'shipped' THEN RAISE EXCEPTION 'TRANSFER_BAD_STATUS'; END IF;
++  FOR l IN SELECT id, product_id, quantity_shipped, quantity_received FROM stock_transfer_lines
++           WHERE transfer_id = p_transfer AND company_id = p_company ORDER BY product_id LOOP
++    remaining := l.quantity_shipped - l.quantity_received;
++    IF remaining <= 0 THEN CONTINUE; END IF;
++    INSERT INTO stock_balances (company_id, warehouse_id, product_id, quantity_on_hand)
++    VALUES (p_company, t.destination_warehouse_id, l.product_id, remaining)
++    ON CONFLICT (company_id, warehouse_id, product_id)
++    DO UPDATE SET quantity_on_hand = stock_balances.quantity_on_hand + EXCLUDED.quantity_on_hand, updated_at = now();
++    UPDATE stock_transfer_lines SET quantity_received = quantity_shipped WHERE id = l.id;
++    INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id, warehouse_id, source_type, source_id)
++    VALUES (p_company, l.product_id, 'transfer_in', remaining::int, 'Transfert ' || t.transfer_number, p_user, t.destination_warehouse_id, 'transfer', p_transfer::text);
++  END LOOP;
++  UPDATE stock_transfers SET status = 'received', received_at = now() WHERE id = p_transfer;
++END
++$$;
++
++CREATE OR REPLACE FUNCTION cancel_transfer(p_company uuid, p_transfer uuid) RETURNS void
++LANGUAGE plpgsql AS $$
++DECLARE
++  t stock_transfers%ROWTYPE;
++BEGIN
++  SELECT * INTO t FROM stock_transfers WHERE id = p_transfer AND company_id = p_company FOR UPDATE;
++  IF NOT FOUND THEN RAISE EXCEPTION 'TRANSFER_NOT_FOUND'; END IF;
++  IF t.status <> 'draft' THEN RAISE EXCEPTION 'TRANSFER_BAD_STATUS'; END IF;
++  UPDATE stock_transfers SET status = 'cancelled' WHERE id = p_transfer;
++END
++$$;
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/api.ts Gestion_de_Stock-main/lib/api.ts
+--- orig/Gestion_de_Stock-main/lib/api.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/lib/api.ts	2026-10-22 11:31:30.697189867 +0000
+@@ -42,3 +42,27 @@
+ export function isForeignKey(error: unknown) {
+   return /foreign key/i.test(errorText(error));
+ }
++
++export function isCheckViolation(error: unknown) {
++  return /check constraint/i.test(errorText(error));
++}
++
++const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++
++export function isUuid(value: string) {
++  return UUID_PATTERN.test(value);
++}
++
++/** Message affiché quand une opération réduit le stock de l'entrepôt principal au-delà de ce qu'il contient. */
++export const MAIN_WAREHOUSE_STOCK_ERROR =
++  "Stock insuffisant dans l’entrepôt principal (une partie du stock se trouve peut-être dans un autre entrepôt).";
++
++/** Traduit les erreurs levées par les fonctions SQL de transfert (ship_transfer, receive_transfer, cancel_transfer). */
++export function transferFailure(error: unknown) {
++  const text = errorText(error);
++  if (/TRANSFER_NOT_FOUND/.test(text)) return fail("Transfert introuvable.", 404);
++  if (/TRANSFER_BAD_STATUS/.test(text)) return fail("Ce transfert n’est pas dans un état qui permet cette action.", 409);
++  if (/TRANSFER_EMPTY/.test(text)) return fail("Ce transfert ne contient aucune ligne.", 400);
++  if (/INSUFFICIENT_STOCK/.test(text)) return fail("Stock disponible insuffisant dans l’entrepôt d’origine.", 409);
++  return null;
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/auth.ts Gestion_de_Stock-main/lib/auth.ts
 --- orig/Gestion_de_Stock-main/lib/auth.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/lib/auth.ts	2026-10-21 08:00:33.722474891 +0000
 @@ -23,6 +23,8 @@
@@ -901,9 +2304,21 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/lib/auth.ts Gestion_de_Stock
      `;
    } catch {
      // Le journal ne doit jamais bloquer l'action principale.
-diff -ru -x node_modules orig/Gestion_de_Stock-main/lib/roles.ts Gestion_de_Stock-main/lib/roles.ts
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/format.ts Gestion_de_Stock-main/lib/format.ts
+--- orig/Gestion_de_Stock-main/lib/format.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/lib/format.ts	2026-10-22 11:31:30.697395754 +0000
+@@ -26,5 +26,7 @@
+ export const MOVEMENT_LABELS: Record<string, string> = {
+   in: "Entrée",
+   out: "Sortie",
+-  adjustment: "Inventaire"
++  adjustment: "Inventaire",
++  transfer_out: "Transfert sortant",
++  transfer_in: "Transfert entrant"
+ };
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/roles.ts Gestion_de_Stock-main/lib/roles.ts
 --- orig/Gestion_de_Stock-main/lib/roles.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/roles.ts	2026-10-21 08:00:33.721558394 +0000
++++ Gestion_de_Stock-main/lib/roles.ts	2026-10-22 11:31:30.697189867 +0000
 @@ -9,6 +9,15 @@
    seller: "Vendeur"
  };
@@ -920,7 +2335,32 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/lib/roles.ts Gestion_de_Stoc
  export function isRole(value: unknown): value is Role {
    return typeof value === "string" && (ROLES as readonly string[]).includes(value);
  }
-diff -ru -x node_modules orig/Gestion_de_Stock-main/lib/stock.ts Gestion_de_Stock-main/lib/stock.ts
+@@ -21,7 +30,9 @@
+   | "sales.view" | "sales.write" | "sales.cancel"
+   | "reports.view" | "users.manage"
+   | "purchases.view" | "purchases.write" | "purchases.receive"
+-  | "audit.view" | "settings.manage";
++  | "audit.view" | "settings.manage"
++  | "warehouses.view" | "warehouses.write"
++  | "transfers.view" | "transfers.write" | "transfers.receive";
+ 
+ const PERMISSIONS: Record<Permission, readonly Role[]> = {
+   "products.write": ["super_admin", "admin", "manager", "storekeeper"],
+@@ -41,7 +52,12 @@
+   "purchases.write": ["super_admin", "admin", "manager"],
+   "purchases.receive": ["super_admin", "admin", "manager", "storekeeper"],
+   "audit.view": ["super_admin", "admin"],
+-  "settings.manage": ["super_admin", "admin"]
++  "settings.manage": ["super_admin", "admin"],
++  "warehouses.view": ["super_admin", "admin", "manager", "storekeeper"],
++  "warehouses.write": ["super_admin", "admin", "manager"],
++  "transfers.view": ["super_admin", "admin", "manager", "storekeeper"],
++  "transfers.write": ["super_admin", "admin", "manager", "storekeeper"],
++  "transfers.receive": ["super_admin", "admin", "manager", "storekeeper"]
+ };
+ 
+ export function can(role: Role, permission: Permission) {
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/stock.ts Gestion_de_Stock-main/lib/stock.ts
 --- orig/Gestion_de_Stock-main/lib/stock.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/lib/stock.ts	2026-10-21 08:01:02.467322738 +0000
 @@ -1,3 +1,5 @@
@@ -929,5 +2369,106 @@ diff -ru -x node_modules orig/Gestion_de_Stock-main/lib/stock.ts Gestion_de_Stoc
  import type { NeonQueryFunction } from "@neondatabase/serverless";
  
  type Sql = NeonQueryFunction<false, false>;
-Only in Gestion_de_Stock-main: scripts
-Only in Gestion_de_Stock-main: tsconfig.tsbuildinfo
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/validation.ts Gestion_de_Stock-main/lib/validation.ts
+--- orig/Gestion_de_Stock-main/lib/validation.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/lib/validation.ts	2026-10-22 11:31:30.697189867 +0000
+@@ -129,3 +129,44 @@
+   currentPassword: z.string().min(1, "Saisissez votre mot de passe actuel").max(128),
+   newPassword: passwordSchema
+ });
++
++const warehouseId = z.string().uuid("Entrepôt invalide");
++
++export const warehouseSchema = z.object({
++  name: z.string().trim().min(2, "Le nom doit contenir au moins 2 caractères").max(120),
++  code: z
++    .string()
++    .trim()
++    .toUpperCase()
++    .min(2, "Le code doit contenir au moins 2 caractères")
++    .max(20)
++    .regex(/^[A-Z0-9_-]+$/, "Le code ne peut contenir que des lettres, chiffres, tirets")
++});
++
++export const warehouseUpdateSchema = warehouseSchema.partial().extend({
++  status: z.enum(["active", "inactive"]).optional()
++});
++
++export const transferSchema = z
++  .object({
++    sourceId: warehouseId,
++    destinationId: warehouseId,
++    note: optionalText(300),
++    lines: z
++      .array(
++        z.object({
++          productId: z.coerce.number().int().positive("Choisissez un produit"),
++          quantity: z.coerce.number().int("Quantité invalide").min(1, "La quantité doit être positive").max(100000000)
++        })
++      )
++      .min(1, "Ajoutez au moins un produit")
++      .max(200)
++  })
++  .refine((value) => value.sourceId !== value.destinationId, {
++    message: "Les entrepôts d’origine et de destination doivent être différents",
++    path: ["destinationId"]
++  })
++  .refine((value) => new Set(value.lines.map((line) => line.productId)).size === value.lines.length, {
++    message: "Un produit ne peut apparaître qu’une seule fois dans un transfert",
++    path: ["lines"]
++  });
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/scripts/check-isolation.mjs Gestion_de_Stock-main/scripts/check-isolation.mjs
+--- orig/Gestion_de_Stock-main/scripts/check-isolation.mjs	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/scripts/check-isolation.mjs	2026-10-21 08:02:21.415400613 +0000
+@@ -0,0 +1,51 @@
++// Vérifie l'isolation multi-entreprises au niveau de la base (à lancer sur une branche Neon de test, jamais en production).
++// Usage : DATABASE_URL="postgresql://..." node scripts/check-isolation.mjs
++import { neon } from "@neondatabase/serverless";
++
++const url = process.env.DATABASE_URL;
++if (!url) { console.error("DATABASE_URL manquante."); process.exit(1); }
++const sql = neon(url);
++const tag = Math.random().toString(36).slice(2, 8);
++let failures = 0;
++
++function check(name, ok) {
++  console.log(`${ok ? "OK  " : "ÉCHEC"} ${name}`);
++  if (!ok) failures += 1;
++}
++async function rejected(promise) {
++  try { await promise; return false; } catch { return true; }
++}
++
++const a = (await sql`INSERT INTO companies (name, slug) VALUES (${"Test A " + tag}, ${"test-a-" + tag}) RETURNING id`)[0].id;
++const b = (await sql`INSERT INTO companies (name, slug) VALUES (${"Test B " + tag}, ${"test-b-" + tag}) RETURNING id`)[0].id;
++
++try {
++  const pa = (await sql`INSERT INTO products (company_id, sku, name) VALUES (${a}::uuid, 'ISO-1', 'Produit A') RETURNING id`)[0].id;
++  const sameSkuOk = !(await rejected(sql`INSERT INTO products (company_id, sku, name) VALUES (${b}::uuid, 'ISO-1', 'Produit B')`));
++  check("deux entreprises peuvent utiliser le même SKU", sameSkuOk);
++  check("SKU dupliqué dans la même entreprise refusé",
++    await rejected(sql`INSERT INTO products (company_id, sku, name) VALUES (${a}::uuid, 'ISO-1', 'Doublon')`));
++  check("mouvement de B sur un produit de A refusé",
++    await rejected(sql`INSERT INTO stock_movements (company_id, product_id, movement_type, quantity) VALUES (${b}::uuid, ${pa}::bigint, 'in', 1)`));
++
++  const cb = (await sql`INSERT INTO customers (company_id, name) VALUES (${b}::uuid, 'Client B') RETURNING id`)[0].id;
++  check("vente de A avec un client de B refusée",
++    await rejected(sql`INSERT INTO sales (company_id, customer_id, status, total_amount, payment_method) VALUES (${a}::uuid, ${cb}::bigint, 'completed', 0, 'cash')`));
++
++  const sb = (await sql`INSERT INTO suppliers (company_id, name) VALUES (${b}::uuid, 'Fournisseur B') RETURNING id`)[0].id;
++  check("commande de A avec un fournisseur de B refusée",
++    await rejected(sql`INSERT INTO purchase_orders (company_id, supplier_id) VALUES (${a}::uuid, ${sb}::bigint)`));
++} finally {
++  for (const id of [a, b]) {
++    await sql`DELETE FROM stock_movements WHERE company_id = ${id}::uuid`;
++    await sql`DELETE FROM stock_balances WHERE company_id = ${id}::uuid`;
++    await sql`DELETE FROM purchase_orders WHERE company_id = ${id}::uuid`;
++    await sql`DELETE FROM sales WHERE company_id = ${id}::uuid`;
++    await sql`DELETE FROM products WHERE company_id = ${id}::uuid`;
++    await sql`DELETE FROM customers WHERE company_id = ${id}::uuid`;
++    await sql`DELETE FROM suppliers WHERE company_id = ${id}::uuid`;
++    await sql`DELETE FROM companies WHERE id = ${id}::uuid`;
++  }
++}
++console.log(failures === 0 ? "\nIsolation vérifiée." : `\n${failures} contrôle(s) en échec.`);
++process.exit(failures === 0 ? 0 : 1);

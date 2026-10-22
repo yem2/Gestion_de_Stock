@@ -105,3 +105,17 @@ Vérification : `DATABASE_URL=... node scripts/check-isolation.mjs` (sur une bra
 Connexions et performances : les requêtes passent par le pilote HTTP Neon (aucune connexion persistante). Utiliser l'URL **pooler** de Neon dans `DATABASE_URL` et placer les fonctions Vercel dans la région la plus proche de la base.
 
 Limites actuelles : un seul entrepôt par entreprise est exploité par l'interface, la session prend la première entreprise active de l'utilisateur, et les permissions restent celles de `lib/roles.ts` (les tables RBAC sont alimentées mais pas encore lues).
+
+## Phase 03 — Entrepôts et transferts
+
+Migrations à appliquer **avant** de déployer le code correspondant :
+
+1. `db/0010_phase3_stock_foundations.sql` — tables de la phase 3 (transferts, inventaires, codes-barres, réservations, notifications, permissions).
+2. `db/0011_transfers_functions.sql` — correction du déclencheur de soldes, types de mouvement `transfer_out` / `transfer_in`, fonctions `ship_transfer`, `receive_transfer`, `cancel_transfer`.
+
+Principes :
+- `products.quantity` reste le stock **total sous responsabilité de l'entreprise** (entrepôts + en transit). Les ventes, achats et mouvements existants agissent sur l'entrepôt principal ; le déclencheur applique la variation à son solde.
+- Un transfert déplace uniquement les soldes par entrepôt : expédition = retrait de l'origine (stock en transit), réception = ajout à la destination. Le total ne change pas.
+- Une vente ou une sortie supérieure au stock de l'entrepôt principal est refusée (409) même si le total est suffisant.
+- Les numéros de transfert (`TR-AAAA-00001`) sont générés côté serveur, sans doublon, via `document_sequences`.
+- Limite actuelle : la réception est complète (pas de réception partielle) ; les ventes ne choisissent pas encore l'entrepôt.
