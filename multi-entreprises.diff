@@ -1,0 +1,933 @@
+diff -ru -x node_modules orig/Gestion_de_Stock-main/README.md Gestion_de_Stock-main/README.md
+--- orig/Gestion_de_Stock-main/README.md	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/README.md	2026-10-21 08:02:21.427771447 +0000
+@@ -28,7 +28,7 @@
+ 2. Installe les dépendances : `npm install`
+ 3. Copie `.env.example` vers `.env.local`.
+ 4. Crée une base de données **distincte** dans Neon et place son URL dans `DATABASE_URL`.
+-5. Exécute le SQL de `db/0000_initial_schema.sql`, `db/0001_auth.sql` puis `db/0002_modules.sql`, `db/0003_password_reset.sql` puis `db/0004_purchases_settings.sql` dans le SQL Editor de cette base Neon.
++5. Exécute le SQL de `db/0000_initial_schema.sql`, `db/0001_auth.sql` puis `db/0002_modules.sql`, `db/0003_password_reset.sql` puis `db/0004_purchases_settings.sql` dans le SQL Editor de cette base Neon, puis les migrations multi-entreprises décrites plus bas (0005 à 0009).
+ 6. Lance `npm run dev`, puis ouvre `http://localhost:3000`.
+ 
+ Sans `DATABASE_URL` et la migration, l'interface s'affiche mais les données et l'ajout de produits ne fonctionnent pas.
+@@ -86,3 +86,22 @@
+ - **Achats** : commandes aux fournisseurs (articles, quantités, coût unitaire). « Réceptionner » passe la commande à *reçue*, augmente le stock et trace les entrées dans la même requête SQL ; une commande ne peut être reçue qu'une fois. Annulation possible tant qu'elle n'est pas reçue.
+ - **Journal d'activité** (administrateurs) : les 300 dernières actions (connexions, produits, ventes, achats, exports, paramètres…) avec filtre.
+ - **Paramètres** : changement de son propre mot de passe (ancien mot de passe exigé, autres sessions fermées) et informations de l'entreprise (nom, adresse, téléphone, message) reprises sur les reçus de vente.
++
++
++## Multi-entreprises (cahier des charges, phases 02 et 03)
++
++Chaque donnée métier appartient à une entreprise (`company_id`). La session contient l'entreprise active (`companyId`) et **toutes les requêtes l'utilisent** : ne jamais lire `company_id` depuis le navigateur.
++
++Ordre d'application sur la base (idéalement d'abord sur une branche Neon de test) :
++
++1. `db/0005_multi_company_rbac.sql` : entreprises, rôles, permissions, appartenances, `company_id` et contraintes inter-entreprises.
++2. `db/0006_warehouses_balances.sql` : entrepôts, unités, catégories, `stock_balances`.
++3. `db/0007_sync_triggers.sql` : synchronise `stock_balances` avec `products.quantity` (entrepôt par défaut).
++4. `db/0009_settings_to_company.sql` : paramètres propres à chaque entreprise.
++5. Déployer ce code, puis exécuter `db/0008_drop_transitional_defaults.sql` (retire le `company_id` par défaut transitoire).
++
++Vérification : `DATABASE_URL=... node scripts/check-isolation.mjs` (sur une branche de test uniquement).
++
++Connexions et performances : les requêtes passent par le pilote HTTP Neon (aucune connexion persistante). Utiliser l'URL **pooler** de Neon dans `DATABASE_URL` et placer les fonctions Vercel dans la région la plus proche de la base.
++
++Limites actuelles : un seul entrepôt par entreprise est exploité par l'interface, la session prend la première entreprise active de l'utilisateur, et les permissions restent celles de `lib/roles.ts` (les tables RBAC sont alimentées mais pas encore lues).
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/audit/route.ts Gestion_de_Stock-main/app/api/audit/route.ts
+--- orig/Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-21 08:00:33.729401120 +0000
+@@ -14,6 +14,7 @@
+     const entries = await sql`
+       SELECT a.id, a.action, a.entity, a.entity_id AS "entityId", a.detail, a.created_at AS "createdAt", u.name AS "userName"
+       FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
++      WHERE a.company_id = ${auth.user.companyId}::uuid
+       ORDER BY a.created_at DESC, a.id DESC LIMIT 300
+     `;
+     return NextResponse.json({ entries });
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/auth/setup/route.ts Gestion_de_Stock-main/app/api/auth/setup/route.ts
+--- orig/Gestion_de_Stock-main/app/api/auth/setup/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/auth/setup/route.ts	2026-10-21 08:01:02.465658990 +0000
+@@ -3,6 +3,7 @@
+ import { getSql } from "@/lib/db";
+ import { hashPassword, logAudit } from "@/lib/auth";
+ import { setupSchema } from "@/lib/validation";
++import { RBAC_ROLE_NAMES } from "@/lib/roles";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -42,9 +43,20 @@
+     }
+     const passwordHash = await hashPassword(parsed.data.password);
+     const rows = await sql`
+-      INSERT INTO users (email, name, password_hash, role)
+-      VALUES (${parsed.data.email}, ${parsed.data.name}, ${passwordHash}, 'super_admin')
+-      RETURNING id
++      WITH u AS (
++        INSERT INTO users (email, name, password_hash, role)
++        VALUES (${parsed.data.email}, ${parsed.data.name}, ${passwordHash}, 'super_admin')
++        RETURNING id
++      ), m AS (
++        INSERT INTO company_memberships (company_id, user_id)
++        SELECT c.id, u.id FROM companies c, u WHERE c.slug = 'default'
++        RETURNING id, company_id
++      ), mr AS (
++        INSERT INTO membership_roles (company_id, membership_id, role_id)
++        SELECT m.company_id, m.id, r.id FROM m JOIN roles r ON r.company_id = m.company_id AND r.name = ${RBAC_ROLE_NAMES.super_admin}
++        RETURNING 1
++      )
++      SELECT id FROM u
+     `;
+     await logAudit(Number(rows[0].id), "setup_super_admin", "user", Number(rows[0].id));
+     return NextResponse.json({ ok: true }, { status: 201 });
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/customers/[id]/route.ts Gestion_de_Stock-main/app/api/customers/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/customers/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/customers/[id]/route.ts	2026-10-21 08:00:33.728439916 +0000
+@@ -26,7 +26,7 @@
+         name = ${d.name},
+         phone = ${phone},
+         email = ${email}
+-      WHERE id = ${id}
++      WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid
+       RETURNING id, name, phone, email, created_at AS "createdAt"
+     `;
+     if (!rows[0]) return fail("Introuvable.", 404);
+@@ -44,7 +44,7 @@
+   if (!id) return fail("Identifiant invalide.");
+   try {
+     const sql = getSql();
+-    const rows = await sql`DELETE FROM customers WHERE id = ${id} RETURNING id`;
++    const rows = await sql`DELETE FROM customers WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid RETURNING id`;
+     if (!rows[0]) return fail("Introuvable.", 404);
+     await logAudit(auth.user.id, "customer_delete", "customer", id);
+     return NextResponse.json({ ok: true });
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/customers/route.ts Gestion_de_Stock-main/app/api/customers/route.ts
+--- orig/Gestion_de_Stock-main/app/api/customers/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/customers/route.ts	2026-10-21 08:00:33.728110544 +0000
+@@ -14,7 +14,7 @@
+     const sql = getSql();
+     const rows = await sql`
+       SELECT id, name, phone, email, created_at AS "createdAt"
+-      FROM customers ORDER BY name ASC LIMIT 1000
++      FROM customers WHERE company_id = ${auth.user.companyId}::uuid ORDER BY name ASC LIMIT 1000
+     `;
+     return NextResponse.json({ customers: rows });
+   } catch {
+@@ -33,8 +33,8 @@
+   try {
+     const sql = getSql();
+     const rows = await sql`
+-      INSERT INTO customers (name, phone, email)
+-      VALUES (${d.name}, ${phone}, ${email})
++      INSERT INTO customers (company_id, name, phone, email)
++      VALUES (${auth.user.companyId}::uuid, ${d.name}, ${phone}, ${email})
+       RETURNING id, name, phone, email, created_at AS "createdAt"
+     `;
+     await logAudit(auth.user.id, "customer_create", "customer", Number(rows[0].id));
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/movements/route.ts Gestion_de_Stock-main/app/api/movements/route.ts
+--- orig/Gestion_de_Stock-main/app/api/movements/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/movements/route.ts	2026-10-21 08:00:33.724543144 +0000
+@@ -2,7 +2,7 @@
+ import { getSql } from "@/lib/db";
+ import { authorize, logAudit } from "@/lib/auth";
+ import { rolesFor } from "@/lib/roles";
+-import { fail, parseBody, serverError } from "@/lib/api";
++import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
+ import { movementSchema } from "@/lib/validation";
+ 
+ export const runtime = "nodejs";
+@@ -19,6 +19,7 @@
+       JOIN products p ON p.id = m.product_id
+       LEFT JOIN suppliers s ON s.id = m.supplier_id
+       LEFT JOIN users u ON u.id = m.user_id
++      WHERE m.company_id = ${auth.user.companyId}::uuid
+       ORDER BY m.created_at DESC, m.id DESC
+       LIMIT 300
+     `;
+@@ -45,10 +46,10 @@
+       rows = await sql`
+         WITH upd AS (
+           UPDATE products SET quantity = quantity + ${quantity}::int, updated_at = NOW()
+-          WHERE id = ${productId} AND archived = FALSE RETURNING id, quantity
++          WHERE id = ${productId} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE RETURNING id, company_id, quantity
+         ), ins AS (
+-          INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id, supplier_id)
+-          SELECT id, 'in', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint, ${supplier}::bigint FROM upd
++          INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id, supplier_id)
++          SELECT company_id, id, 'in', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint, ${supplier}::bigint FROM upd
+           RETURNING id
+         )
+         SELECT (SELECT quantity FROM upd) AS quantity, (SELECT id FROM ins) AS "movementId"
+@@ -57,10 +58,10 @@
+       rows = await sql`
+         WITH upd AS (
+           UPDATE products SET quantity = quantity - ${quantity}::int, updated_at = NOW()
+-          WHERE id = ${productId} AND archived = FALSE AND quantity >= ${quantity}::int RETURNING id, quantity
++          WHERE id = ${productId} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE AND quantity >= ${quantity}::int RETURNING id, company_id, quantity
+         ), ins AS (
+-          INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
+-          SELECT id, 'out', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint FROM upd
++          INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
++          SELECT company_id, id, 'out', ${quantity}::int, ${text}::text, ${auth.user.id}::bigint FROM upd
+           RETURNING id
+         )
+         SELECT (SELECT quantity FROM upd) AS quantity, (SELECT id FROM ins) AS "movementId"
+@@ -68,14 +69,14 @@
+     } else {
+       rows = await sql`
+         WITH cur AS (
+-          SELECT id, quantity AS old FROM products WHERE id = ${productId} AND archived = FALSE FOR UPDATE
++          SELECT id, quantity AS old FROM products WHERE id = ${productId} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE FOR UPDATE
+         ), upd AS (
+           UPDATE products p SET quantity = ${quantity}::int, updated_at = NOW()
+           FROM cur WHERE p.id = cur.id AND cur.old <> ${quantity}::int
+-          RETURNING p.id, p.quantity, cur.old
++          RETURNING p.id, p.company_id, p.quantity, cur.old
+         ), ins AS (
+-          INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
+-          SELECT id, 'adjustment', ABS(quantity - old),
++          INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
++          SELECT company_id, id, 'adjustment', ABS(quantity - old),
+                  'Inventaire : ' || old || ' → ' || quantity || COALESCE(' — ' || ${text}::text, ''),
+                  ${auth.user.id}::bigint
+           FROM upd RETURNING id
+@@ -90,7 +91,8 @@
+     }
+     await logAudit(auth.user.id, `movement_${type}`, "product", productId, String(quantity));
+     return NextResponse.json({ ok: true, quantity: rows[0].quantity }, { status: 201 });
+-  } catch {
++  } catch (error) {
++    if (isForeignKey(error)) return fail("Fournisseur invalide.", 400);
+     return serverError("Impossible d’enregistrer le mouvement.");
+   }
+ }
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/password-resets/[id]/route.ts	2026-10-21 08:01:02.467160101 +0000
+@@ -17,6 +17,7 @@
+     const sql = getSql();
+     const rows = await sql`
+       SELECT u.id AS "userId", u.role FROM password_resets r JOIN users u ON u.id = r.user_id
++      JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ${auth.user.companyId}::uuid
+       WHERE r.id = ${id} AND r.used_at IS NULL AND r.token_hash IS NULL AND r.expires_at > NOW() AND u.active = TRUE
+     `;
+     const target = rows[0];
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/password-resets/route.ts Gestion_de_Stock-main/app/api/password-resets/route.ts
+--- orig/Gestion_de_Stock-main/app/api/password-resets/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/password-resets/route.ts	2026-10-21 08:01:02.467010495 +0000
+@@ -15,6 +15,7 @@
+     const rows = await sql`
+       SELECT r.id, r.requested_at AS "requestedAt", u.name, u.email, u.role
+       FROM password_resets r JOIN users u ON u.id = r.user_id
++      JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ${auth.user.companyId}::uuid
+       WHERE r.used_at IS NULL AND r.token_hash IS NULL AND r.expires_at > NOW() AND u.active = TRUE
+       ORDER BY r.requested_at DESC LIMIT 50
+     `;
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/products/[id]/route.ts Gestion_de_Stock-main/app/api/products/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/products/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/products/[id]/route.ts	2026-10-21 08:00:33.723323429 +0000
+@@ -28,7 +28,7 @@
+         unit_price = COALESCE(${d.unitPrice ?? null}::numeric, unit_price),
+         min_quantity = COALESCE(${d.minQuantity ?? null}::int, min_quantity),
+         updated_at = NOW()
+-      WHERE id = ${id} AND archived = FALSE
++      WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE
+       RETURNING id, sku, name, category, quantity, unit_price AS "unitPrice", min_quantity AS "minQuantity"
+     `;
+     if (!rows[0]) return fail("Produit introuvable.", 404);
+@@ -48,7 +48,7 @@
+   if (!id) return fail("Identifiant invalide.");
+   try {
+     const sql = getSql();
+-    const rows = await sql`UPDATE products SET archived = TRUE, updated_at = NOW() WHERE id = ${id} AND archived = FALSE RETURNING id`;
++    const rows = await sql`UPDATE products SET archived = TRUE, updated_at = NOW() WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE RETURNING id`;
+     if (!rows[0]) return fail("Produit introuvable.", 404);
+     await logAudit(auth.user.id, "product_archive", "product", id);
+     return NextResponse.json({ ok: true });
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/products/route.ts Gestion_de_Stock-main/app/api/products/route.ts
+--- orig/Gestion_de_Stock-main/app/api/products/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/products/route.ts	2026-10-21 08:00:33.722923634 +0000
+@@ -15,7 +15,7 @@
+     const rows = await sql`
+       SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
+              min_quantity AS "minQuantity", created_at AS "createdAt"
+-      FROM products WHERE archived = FALSE
++      FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE
+       ORDER BY name ASC LIMIT 1000
+     `;
+     return NextResponse.json({ products: rows });
+@@ -35,12 +35,12 @@
+     const sql = getSql();
+     const rows = await sql`
+       WITH p AS (
+-        INSERT INTO products (sku, name, category, quantity, unit_price, min_quantity)
+-        VALUES (${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity})
+-        RETURNING id, sku, name, category, quantity, unit_price, min_quantity, created_at
++        INSERT INTO products (company_id, sku, name, category, quantity, unit_price, min_quantity)
++        VALUES (${auth.user.companyId}::uuid, ${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity})
++        RETURNING id, company_id, sku, name, category, quantity, unit_price, min_quantity, created_at
+       ), m AS (
+-        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
+-        SELECT id, 'in', quantity, 'Stock initial', ${auth.user.id}::bigint FROM p WHERE quantity > 0
++        INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
++        SELECT company_id, id, 'in', quantity, 'Stock initial', ${auth.user.id}::bigint FROM p WHERE quantity > 0
+         RETURNING 1
+       )
+       SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts
+--- orig/Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/purchases/[id]/cancel/route.ts	2026-10-21 08:00:33.727785519 +0000
+@@ -13,7 +13,7 @@
+   if (!id) return fail("Identifiant invalide.");
+   try {
+     const sql = getSql();
+-    const rows = await sql`UPDATE purchase_orders SET status = 'cancelled' WHERE id = ${id} AND status = 'ordered' RETURNING id`;
++    const rows = await sql`UPDATE purchase_orders SET status = 'cancelled' WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND status = 'ordered' RETURNING id`;
+     if (!rows[0]) return fail("Commande introuvable ou déjà traitée.", 409);
+     await logAudit(auth.user.id, "purchase_cancel", "purchase", id);
+     return NextResponse.json({ ok: true });
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts
+--- orig/Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/purchases/[id]/receive/route.ts	2026-10-21 08:00:33.727564693 +0000
+@@ -17,7 +17,7 @@
+     const rows = await sql`
+       WITH o AS (
+         UPDATE purchase_orders SET status = 'received', received_at = NOW()
+-        WHERE id = ${id} AND status = 'ordered' RETURNING id, supplier_id
++        WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND status = 'ordered' RETURNING id, supplier_id
+       ), agg AS (
+         SELECT product_id, SUM(quantity)::int AS q FROM purchase_order_items WHERE order_id = ${id} GROUP BY product_id
+       ), upd AS (
+@@ -25,8 +25,8 @@
+         FROM agg a WHERE p.id = a.product_id AND EXISTS (SELECT 1 FROM o)
+         RETURNING p.id, a.q
+       ), mov AS (
+-        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id, supplier_id)
+-        SELECT upd.id, 'in', upd.q, 'Réception commande #' || ${id}::text, ${auth.user.id}::bigint, (SELECT supplier_id FROM o)
++        INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id, supplier_id)
++        SELECT ${auth.user.companyId}::uuid, upd.id, 'in', upd.q, 'Réception commande #' || ${id}::text, ${auth.user.id}::bigint, (SELECT supplier_id FROM o)
+         FROM upd RETURNING 1
+       )
+       SELECT (SELECT id FROM o) AS id
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/[id]/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/purchases/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/purchases/[id]/route.ts	2026-10-21 08:00:33.727043517 +0000
+@@ -19,7 +19,7 @@
+       FROM purchase_orders o
+       LEFT JOIN suppliers s ON s.id = o.supplier_id
+       LEFT JOIN users u ON u.id = o.user_id
+-      WHERE o.id = ${id}
++      WHERE o.id = ${id} AND o.company_id = ${auth.user.companyId}::uuid
+     `;
+     if (!orders[0]) return fail("Commande introuvable.", 404);
+     const items = await sql`
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/purchases/route.ts Gestion_de_Stock-main/app/api/purchases/route.ts
+--- orig/Gestion_de_Stock-main/app/api/purchases/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/purchases/route.ts	2026-10-21 08:00:33.726768412 +0000
+@@ -2,7 +2,7 @@
+ import { getSql } from "@/lib/db";
+ import { authorize, logAudit } from "@/lib/auth";
+ import { rolesFor } from "@/lib/roles";
+-import { fail, parseBody, serverError } from "@/lib/api";
++import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
+ import { purchaseSchema } from "@/lib/validation";
+ 
+ export const runtime = "nodejs";
+@@ -19,6 +19,7 @@
+       FROM purchase_orders o
+       LEFT JOIN suppliers s ON s.id = o.supplier_id
+       LEFT JOIN users u ON u.id = o.user_id
++      WHERE o.company_id = ${auth.user.companyId}::uuid
+       ORDER BY o.created_at DESC, o.id DESC LIMIT 300
+     `;
+     return NextResponse.json({ purchases });
+@@ -46,12 +47,12 @@
+         SELECT (e->>'productId')::bigint AS product_id, (e->>'quantity')::int AS qty, (e->>'unitCost')::numeric AS cost
+         FROM jsonb_array_elements(${itemsJson}::jsonb) e
+       ), valid AS (
+-        SELECT i.* FROM items i JOIN products p ON p.id = i.product_id AND p.archived = FALSE
++        SELECT i.* FROM items i JOIN products p ON p.id = i.product_id AND p.archived = FALSE AND p.company_id = ${auth.user.companyId}::uuid
+       ), ok AS (
+         SELECT ((SELECT COUNT(*) FROM valid) = (SELECT COUNT(*) FROM items)) AS good
+       ), ord AS (
+-        INSERT INTO purchase_orders (supplier_id, note, total_cost, user_id)
+-        SELECT ${supplierId ?? null}::bigint, ${text}::text,
++        INSERT INTO purchase_orders (company_id, supplier_id, note, total_cost, user_id)
++        SELECT ${auth.user.companyId}::uuid, ${supplierId ?? null}::bigint, ${text}::text,
+                COALESCE((SELECT SUM(qty * cost) FROM valid), 0), ${auth.user.id}::bigint
+         WHERE (SELECT good FROM ok)
+         RETURNING id, total_cost
+@@ -65,7 +66,8 @@
+     if (rows[0]?.id == null) return fail("Commande impossible : produit introuvable.", 409);
+     await logAudit(auth.user.id, "purchase_create", "purchase", Number(rows[0].id), String(rows[0].total));
+     return NextResponse.json({ purchase: { id: rows[0].id, total: rows[0].total } }, { status: 201 });
+-  } catch {
++  } catch (error) {
++    if (isForeignKey(error)) return fail("Fournisseur invalide.", 400);
+     return serverError("Impossible d’enregistrer la commande.");
+   }
+ }
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/reports/export/route.ts Gestion_de_Stock-main/app/api/reports/export/route.ts
+--- orig/Gestion_de_Stock-main/app/api/reports/export/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/reports/export/route.ts	2026-10-21 08:01:02.464663940 +0000
+@@ -31,7 +31,7 @@
+     if (type === "products") {
+       const rows = await sql`
+         SELECT sku, name, category, quantity, unit_price, min_quantity, quantity * unit_price AS value
+-        FROM products WHERE archived = FALSE ORDER BY name
++        FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE ORDER BY name
+       `;
+       body = csv(
+         ["Référence", "Produit", "Catégorie", "Quantité", "Prix unitaire (FCFA)", "Seuil minimum", "Valeur (FCFA)"],
+@@ -43,6 +43,7 @@
+                m.quantity, m.note, s.name AS supplier, u.name AS author
+         FROM stock_movements m JOIN products p ON p.id = m.product_id
+         LEFT JOIN suppliers s ON s.id = m.supplier_id LEFT JOIN users u ON u.id = m.user_id
++        WHERE m.company_id = ${auth.user.companyId}::uuid
+         ORDER BY m.created_at DESC LIMIT 5000
+       `;
+       const labels: Record<string, string> = { in: "Entrée", out: "Sortie", adjustment: "Inventaire" };
+@@ -55,6 +56,7 @@
+         SELECT s.id, to_char(s.created_at AT TIME ZONE ${TZ}, 'YYYY-MM-DD HH24:MI') AS date, s.status, s.payment_method,
+                s.total_amount, c.name AS customer, u.name AS seller
+         FROM sales s LEFT JOIN customers c ON c.id = s.customer_id LEFT JOIN users u ON u.id = s.user_id
++        WHERE s.company_id = ${auth.user.companyId}::uuid
+         ORDER BY s.created_at DESC LIMIT 5000
+       `;
+       const statuses: Record<string, string> = { completed: "Terminée", cancelled: "Annulée", draft: "Brouillon" };
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/reports/summary/route.ts Gestion_de_Stock-main/app/api/reports/summary/route.ts
+--- orig/Gestion_de_Stock-main/app/api/reports/summary/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/reports/summary/route.ts	2026-10-21 08:01:02.464213100 +0000
+@@ -20,44 +20,45 @@
+         SELECT COUNT(*)::int AS "productCount", COALESCE(SUM(quantity), 0)::int AS units,
+                COALESCE(SUM(quantity * unit_price), 0) AS value,
+                COUNT(*) FILTER (WHERE quantity <= min_quantity)::int AS "lowCount"
+-        FROM products WHERE archived = FALSE
++        FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE
+       `,
+       sql`
+         SELECT COALESCE(SUM(total_amount), 0) AS total, COUNT(*)::int AS count
+-        FROM sales WHERE status = 'completed'
++        FROM sales WHERE company_id = ${auth.user.companyId}::uuid AND status = 'completed'
+           AND (created_at AT TIME ZONE ${TZ})::date = (NOW() AT TIME ZONE ${TZ})::date
+       `,
+       sql`
+         SELECT COALESCE(SUM(total_amount), 0) AS total, COUNT(*)::int AS count
+-        FROM sales WHERE status = 'completed' AND created_at >= NOW() - (${days}::int * INTERVAL '1 day')
++        FROM sales WHERE company_id = ${auth.user.companyId}::uuid AND status = 'completed' AND created_at >= NOW() - (${days}::int * INTERVAL '1 day')
+       `,
+       sql`
+         SELECT to_char(d.day, 'YYYY-MM-DD') AS day, COALESCE(SUM(s.total_amount), 0) AS total
+         FROM generate_series(
+           ((NOW() AT TIME ZONE ${TZ})::date - (${days}::int - 1)), (NOW() AT TIME ZONE ${TZ})::date, INTERVAL '1 day'
+         ) AS d(day)
+-        LEFT JOIN sales s ON s.status = 'completed' AND (s.created_at AT TIME ZONE ${TZ})::date = d.day::date
++        LEFT JOIN sales s ON s.company_id = ${auth.user.companyId}::uuid AND s.status = 'completed' AND (s.created_at AT TIME ZONE ${TZ})::date = d.day::date
+         GROUP BY d.day ORDER BY d.day
+       `,
+       sql`
+         SELECT payment_method AS method, COALESCE(SUM(total_amount), 0) AS total, COUNT(*)::int AS count
+-        FROM sales WHERE status = 'completed' AND created_at >= NOW() - (${days}::int * INTERVAL '1 day')
++        FROM sales WHERE company_id = ${auth.user.companyId}::uuid AND status = 'completed' AND created_at >= NOW() - (${days}::int * INTERVAL '1 day')
+         GROUP BY payment_method ORDER BY total DESC
+       `,
+       sql`
+         SELECT p.name, SUM(i.quantity)::int AS quantity, SUM(i.quantity * i.unit_price) AS total
+         FROM sale_items i JOIN sales s ON s.id = i.sale_id JOIN products p ON p.id = i.product_id
+-        WHERE s.status = 'completed' AND s.created_at >= NOW() - (${days}::int * INTERVAL '1 day')
++        WHERE s.company_id = ${auth.user.companyId}::uuid AND s.status = 'completed' AND s.created_at >= NOW() - (${days}::int * INTERVAL '1 day')
+         GROUP BY p.id, p.name ORDER BY total DESC LIMIT 5
+       `,
+       sql`
+         SELECT id, name, sku, quantity, min_quantity AS "minQuantity"
+-        FROM products WHERE archived = FALSE AND quantity <= min_quantity
++        FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE AND quantity <= min_quantity
+         ORDER BY quantity ASC, name ASC LIMIT 8
+       `,
+       sql`
+         SELECT m.id, m.movement_type AS type, m.quantity, m.created_at AS "createdAt", p.name AS "productName"
+         FROM stock_movements m JOIN products p ON p.id = m.product_id
++        WHERE m.company_id = ${auth.user.companyId}::uuid
+         ORDER BY m.created_at DESC, m.id DESC LIMIT 6
+       `
+     ]);
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts
+--- orig/Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/sales/[id]/cancel/route.ts	2026-10-21 08:00:33.725917636 +0000
+@@ -16,15 +16,15 @@
+     const sql = getSql();
+     const rows = await sql`
+       WITH s AS (
+-        UPDATE sales SET status = 'cancelled' WHERE id = ${id} AND status = 'completed' RETURNING id
++        UPDATE sales SET status = 'cancelled' WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND status = 'completed' RETURNING id
+       ), restock AS (
+         UPDATE products p SET quantity = p.quantity + si.q, updated_at = NOW()
+         FROM (SELECT product_id, SUM(quantity)::int AS q FROM sale_items WHERE sale_id = ${id} GROUP BY product_id) si
+         WHERE p.id = si.product_id AND EXISTS (SELECT 1 FROM s)
+         RETURNING p.id, si.q
+       ), mov AS (
+-        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
+-        SELECT id, 'in', q, 'Annulation vente #' || ${id}::text, ${auth.user.id}::bigint FROM restock
++        INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
++        SELECT ${auth.user.companyId}::uuid, id, 'in', q, 'Annulation vente #' || ${id}::text, ${auth.user.id}::bigint FROM restock
+         RETURNING 1
+       )
+       SELECT (SELECT id FROM s) AS id
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/sales/[id]/route.ts Gestion_de_Stock-main/app/api/sales/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/sales/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/sales/[id]/route.ts	2026-10-21 08:00:33.725604179 +0000
+@@ -19,7 +19,7 @@
+       FROM sales s
+       LEFT JOIN customers c ON c.id = s.customer_id
+       LEFT JOIN users u ON u.id = s.user_id
+-      WHERE s.id = ${id}
++      WHERE s.id = ${id} AND s.company_id = ${auth.user.companyId}::uuid
+     `;
+     if (!sales[0]) return fail("Vente introuvable.", 404);
+     const items = await sql`
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/sales/route.ts Gestion_de_Stock-main/app/api/sales/route.ts
+--- orig/Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-21 08:00:33.725463400 +0000
+@@ -2,7 +2,7 @@
+ import { getSql } from "@/lib/db";
+ import { authorize, logAudit } from "@/lib/auth";
+ import { rolesFor } from "@/lib/roles";
+-import { fail, parseBody, serverError } from "@/lib/api";
++import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
+ import { saleSchema } from "@/lib/validation";
+ 
+ export const runtime = "nodejs";
+@@ -19,6 +19,7 @@
+       FROM sales s
+       LEFT JOIN customers c ON c.id = s.customer_id
+       LEFT JOIN users u ON u.id = s.user_id
++      WHERE s.company_id = ${auth.user.companyId}::uuid
+       ORDER BY s.created_at DESC, s.id DESC
+       LIMIT 300
+     `;
+@@ -51,13 +52,13 @@
+       ), locked AS (
+         SELECT p.id, p.unit_price, p.quantity, a.qty
+         FROM products p JOIN agg a ON a.product_id = p.id
+-        WHERE p.archived = FALSE FOR UPDATE OF p
++        WHERE p.archived = FALSE AND p.company_id = ${auth.user.companyId}::uuid FOR UPDATE OF p
+       ), ok AS (
+         SELECT ((SELECT COUNT(*) FROM locked) = (SELECT COUNT(*) FROM agg)
+                 AND NOT EXISTS (SELECT 1 FROM locked WHERE quantity < qty)) AS good
+       ), sale AS (
+-        INSERT INTO sales (customer_id, status, total_amount, user_id, payment_method)
+-        SELECT ${customerId ?? null}::bigint, 'completed',
++        INSERT INTO sales (company_id, customer_id, status, total_amount, user_id, payment_method)
++        SELECT ${auth.user.companyId}::uuid, ${customerId ?? null}::bigint, 'completed',
+                COALESCE((SELECT SUM(unit_price * qty) FROM locked), 0),
+                ${auth.user.id}::bigint, ${paymentMethod}::text
+         WHERE (SELECT good FROM ok)
+@@ -71,8 +72,8 @@
+         FROM locked l WHERE p.id = l.id AND EXISTS (SELECT 1 FROM sale)
+         RETURNING p.id, l.qty
+       ), mov AS (
+-        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
+-        SELECT id, 'out', qty, 'Vente #' || (SELECT id FROM sale), ${auth.user.id}::bigint FROM dec
++        INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
++        SELECT ${auth.user.companyId}::uuid, id, 'out', qty, 'Vente #' || (SELECT id FROM sale), ${auth.user.id}::bigint FROM dec
+         RETURNING 1
+       )
+       SELECT (SELECT id FROM sale) AS id, (SELECT total_amount FROM sale) AS total
+@@ -82,7 +83,8 @@
+     }
+     await logAudit(auth.user.id, "sale_create", "sale", Number(rows[0].id), String(rows[0].total));
+     return NextResponse.json({ sale: { id: rows[0].id, total: rows[0].total } }, { status: 201 });
+-  } catch {
++  } catch (error) {
++    if (isForeignKey(error)) return fail("Client invalide.", 400);
+     return serverError("Impossible d’enregistrer la vente.");
+   }
+ }
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/settings/route.ts Gestion_de_Stock-main/app/api/settings/route.ts
+--- orig/Gestion_de_Stock-main/app/api/settings/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/settings/route.ts	2026-10-21 08:01:02.465210567 +0000
+@@ -9,11 +9,12 @@
+ 
+ const DEFAULTS = { companyName: "Gestion de Stock", address: "", phone: "", footer: "Merci de votre confiance." };
+ 
+-async function readSettings() {
++async function readSettings(companyId: string) {
+   const sql = getSql();
+-  const rows = await sql`SELECT key, value FROM settings`;
++  const rows = await sql`SELECT settings FROM companies WHERE id = ${companyId}::uuid`;
++  const raw = (rows[0]?.settings ?? {}) as Record<string, unknown>;
+   const values: Record<string, string> = {};
+-  for (const row of rows) values[String(row.key)] = String(row.value);
++  for (const [key, value] of Object.entries(raw)) values[key] = String(value ?? "");
+   return {
+     companyName: values.company_name || DEFAULTS.companyName,
+     address: values.address ?? DEFAULTS.address,
+@@ -26,7 +27,7 @@
+   const auth = await authorize(request);
+   if ("error" in auth) return auth.error;
+   try {
+-    return NextResponse.json({ settings: await readSettings() });
++    return NextResponse.json({ settings: await readSettings(auth.user.companyId) });
+   } catch {
+     return NextResponse.json({ settings: DEFAULTS });
+   }
+@@ -40,14 +41,16 @@
+   const d = body.data;
+   try {
+     const sql = getSql();
++    const patch = JSON.stringify({
++      company_name: d.companyName, address: d.address?.trim() ?? "",
++      phone: d.phone?.trim() ?? "", footer: d.footer?.trim() ?? ""
++    });
+     await sql`
+-      INSERT INTO settings (key, value) VALUES
+-        ('company_name', ${d.companyName}), ('address', ${d.address?.trim() ?? ""}),
+-        ('phone', ${d.phone?.trim() ?? ""}), ('footer', ${d.footer?.trim() ?? ""})
+-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
++      UPDATE companies SET settings = settings || ${patch}::jsonb, updated_at = NOW()
++      WHERE id = ${auth.user.companyId}::uuid
+     `;
+     await logAudit(auth.user.id, "settings_update", "settings");
+-    return NextResponse.json({ settings: await readSettings() });
++    return NextResponse.json({ settings: await readSettings(auth.user.companyId) });
+   } catch {
+     return serverError("Impossible d’enregistrer les paramètres.");
+   }
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/suppliers/[id]/route.ts	2026-10-21 08:00:33.729224315 +0000
+@@ -28,7 +28,7 @@
+         phone = ${phone},
+         email = ${email},
+         address = ${address}
+-      WHERE id = ${id}
++      WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid
+       RETURNING id, name, phone, email, address, created_at AS "createdAt"
+     `;
+     if (!rows[0]) return fail("Introuvable.", 404);
+@@ -46,7 +46,7 @@
+   if (!id) return fail("Identifiant invalide.");
+   try {
+     const sql = getSql();
+-    const rows = await sql`DELETE FROM suppliers WHERE id = ${id} RETURNING id`;
++    const rows = await sql`DELETE FROM suppliers WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid RETURNING id`;
+     if (!rows[0]) return fail("Introuvable.", 404);
+     await logAudit(auth.user.id, "supplier_delete", "supplier", id);
+     return NextResponse.json({ ok: true });
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/suppliers/route.ts Gestion_de_Stock-main/app/api/suppliers/route.ts
+--- orig/Gestion_de_Stock-main/app/api/suppliers/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/suppliers/route.ts	2026-10-21 08:00:33.728882249 +0000
+@@ -14,7 +14,7 @@
+     const sql = getSql();
+     const rows = await sql`
+       SELECT id, name, phone, email, address, created_at AS "createdAt"
+-      FROM suppliers ORDER BY name ASC LIMIT 1000
++      FROM suppliers WHERE company_id = ${auth.user.companyId}::uuid ORDER BY name ASC LIMIT 1000
+     `;
+     return NextResponse.json({ suppliers: rows });
+   } catch {
+@@ -34,8 +34,8 @@
+   try {
+     const sql = getSql();
+     const rows = await sql`
+-      INSERT INTO suppliers (name, phone, email, address)
+-      VALUES (${d.name}, ${phone}, ${email}, ${address})
++      INSERT INTO suppliers (company_id, name, phone, email, address)
++      VALUES (${auth.user.companyId}::uuid, ${d.name}, ${phone}, ${email}, ${address})
+       RETURNING id, name, phone, email, address, created_at AS "createdAt"
+     `;
+     await logAudit(auth.user.id, "supplier_create", "supplier", Number(rows[0].id));
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/users/[id]/route.ts Gestion_de_Stock-main/app/api/users/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/users/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/users/[id]/route.ts	2026-10-21 08:01:02.466827487 +0000
+@@ -2,6 +2,7 @@
+ import { getSql } from "@/lib/db";
+ import { authorize, canManageRole, hashPassword, isRole, logAudit } from "@/lib/auth";
+ import { userUpdateSchema } from "@/lib/validation";
++import { RBAC_ROLE_NAMES, type Role } from "@/lib/roles";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -34,7 +35,11 @@
+ 
+   try {
+     const sql = getSql();
+-    const rows = await sql`SELECT id, role, name, active FROM users WHERE id = ${targetId}`;
++    const rows = await sql`
++      SELECT u.id, u.role, u.name, u.active FROM users u
++      JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ${auth.user.companyId}::uuid
++      WHERE u.id = ${targetId}
++    `;
+     const target = rows[0];
+     if (!target || !isRole(target.role)) {
+       return NextResponse.json({ error: "Utilisateur introuvable." }, { status: 404 });
+@@ -59,17 +64,34 @@
+     // Un changement de rôle, de statut ou de mot de passe ferme les sessions ouvertes.
+     const revoke = changes.role !== undefined || changes.active !== undefined || changes.password !== undefined;
+ 
++    // Utilisateur, appartenance et rôle RBAC sont mis à jour dans la même instruction.
++    const rbacName = RBAC_ROLE_NAMES[role as Role];
+     await sql`
+-      UPDATE users SET
+-        name = ${name},
+-        role = ${role},
+-        active = ${active},
+-        password_hash = COALESCE(${passwordHash}, password_hash),
+-        token_version = token_version + ${revoke && targetId !== auth.user.id ? 1 : 0},
+-        failed_attempts = 0,
+-        locked_until = NULL,
+-        updated_at = NOW()
+-      WHERE id = ${targetId}
++      WITH u AS (
++        UPDATE users SET
++          name = ${name},
++          role = ${role},
++          active = ${active},
++          password_hash = COALESCE(${passwordHash}, password_hash),
++          token_version = token_version + ${revoke && targetId !== auth.user.id ? 1 : 0},
++          failed_attempts = 0,
++          locked_until = NULL,
++          updated_at = NOW()
++        WHERE id = ${targetId}
++        RETURNING id
++      ), m AS (
++        UPDATE company_memberships SET status = ${active ? "active" : "suspended"}
++        WHERE user_id = ${targetId} AND company_id = ${auth.user.companyId}::uuid
++        RETURNING id, company_id
++      ), del AS (
++        DELETE FROM membership_roles mr USING m
++        WHERE mr.membership_id = m.id
++          AND mr.role_id NOT IN (SELECT id FROM roles WHERE company_id = m.company_id AND name = ${rbacName})
++        RETURNING 1
++      )
++      INSERT INTO membership_roles (company_id, membership_id, role_id)
++      SELECT m.company_id, m.id, r.id FROM m JOIN roles r ON r.company_id = m.company_id AND r.name = ${rbacName}
++      ON CONFLICT DO NOTHING
+     `;
+     await logAudit(
+       auth.user.id, "user_update", "user", targetId,
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/api/users/route.ts Gestion_de_Stock-main/app/api/users/route.ts
+--- orig/Gestion_de_Stock-main/app/api/users/route.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/api/users/route.ts	2026-10-21 08:01:02.466185968 +0000
+@@ -2,6 +2,7 @@
+ import { getSql } from "@/lib/db";
+ import { authorize, canManageRole, hashPassword, logAudit } from "@/lib/auth";
+ import { userCreateSchema } from "@/lib/validation";
++import { RBAC_ROLE_NAMES } from "@/lib/roles";
+ 
+ export const runtime = "nodejs";
+ 
+@@ -13,8 +14,9 @@
+   try {
+     const sql = getSql();
+     const users = await sql`
+-      SELECT id, email, name, role, active, last_login_at AS "lastLoginAt", created_at AS "createdAt"
+-      FROM users ORDER BY created_at ASC LIMIT 500
++      SELECT u.id, u.email, u.name, u.role, u.active, u.last_login_at AS "lastLoginAt", u.created_at AS "createdAt"
++      FROM users u JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ${auth.user.companyId}::uuid
++      ORDER BY u.created_at ASC LIMIT 500
+     `;
+     return NextResponse.json({ users });
+   } catch {
+@@ -47,9 +49,19 @@
+     const sql = getSql();
+     const passwordHash = await hashPassword(parsed.data.password);
+     const rows = await sql`
+-      INSERT INTO users (email, name, password_hash, role)
+-      VALUES (${parsed.data.email}, ${parsed.data.name}, ${passwordHash}, ${parsed.data.role})
+-      RETURNING id, email, name, role, active, created_at AS "createdAt"
++      WITH u AS (
++        INSERT INTO users (email, name, password_hash, role)
++        VALUES (${parsed.data.email}, ${parsed.data.name}, ${passwordHash}, ${parsed.data.role})
++        RETURNING id, email, name, role, active, created_at
++      ), m AS (
++        INSERT INTO company_memberships (company_id, user_id) SELECT ${auth.user.companyId}::uuid, u.id FROM u
++        RETURNING id, company_id
++      ), mr AS (
++        INSERT INTO membership_roles (company_id, membership_id, role_id)
++        SELECT m.company_id, m.id, r.id FROM m JOIN roles r ON r.company_id = m.company_id AND r.name = ${RBAC_ROLE_NAMES[parsed.data.role]}
++        RETURNING 1
++      )
++      SELECT id, email, name, role, active, created_at AS "createdAt" FROM u
+     `;
+     await logAudit(auth.user.id, "user_create", "user", Number(rows[0].id), parsed.data.role);
+     return NextResponse.json({ user: rows[0] }, { status: 201 });
+diff -ru -x node_modules orig/Gestion_de_Stock-main/app/globals.css Gestion_de_Stock-main/app/globals.css
+--- orig/Gestion_de_Stock-main/app/globals.css	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/app/globals.css	2026-10-22 06:23:37.592214934 +0000
+@@ -12,6 +12,7 @@
+ body.no-scroll{overflow:hidden}
+ button,input,select,textarea{font:inherit;color:inherit}
+ h1,h2,h3,p{margin:0}
++h1,h2,h3{font-weight:700;line-height:1.25}
+ a{color:inherit}
+ 
+ /* ===== Structure ===== */
+@@ -147,6 +148,7 @@
+   .table,.table tbody,.table tr,.table td{display:block;width:100%}
+   .table tr{margin-bottom:10px;padding:10px 14px;background:var(--card);border:1px solid var(--line);border-radius:12px}
+   .table td{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:7px 0;border:0;text-align:right}
++  .table td{overflow-wrap:anywhere}
+   .table td::before{content:attr(data-label);flex:0 0 38%;color:var(--muted);font-size:.8rem;font-weight:600;text-align:left}
+   .table td.actions{justify-content:flex-end;flex-wrap:wrap;padding-top:10px}
+   .table td.actions::before{display:none}
+@@ -209,3 +211,73 @@
+ /* Lignes d'une commande fournisseur */
+ .purchase-line{display:grid;gap:8px;grid-template-columns:minmax(0,1fr) 80px 110px 40px;align-items:center;margin-bottom:8px}
+ @media (max-width:479px){.purchase-line{grid-template-columns:minmax(0,1fr) 64px 84px 36px}}
++
++/* ===== Typographie et responsive (petits écrans) ===== */
++:root{--muted:#586071}
++body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
++.page-head h1{line-height:1.2}
++.page-head p{font-size:.95rem;line-height:1.5}
++.card h3{font-size:1.05rem;line-height:1.3;margin-bottom:14px}
++.field>span{font-size:.9rem;line-height:1.3;color:#2b2f38}
++.hint{font-size:.85rem;line-height:1.45}
++input::placeholder,textarea::placeholder{color:#8a91a0}
++.btn{line-height:1.25;text-align:center;max-width:100%}
++
++/* Téléphones : un bouton ne doit jamais dépasser de sa carte, son texte passe à la ligne si besoin. */
++@media (max-width:479px){
++  .btn{white-space:normal;padding-top:10px;padding-bottom:10px}
++  .form-actions .btn{flex:1 1 100%}
++  .table .actions .btn{white-space:nowrap}
++}
++
++/* Très petits écrans (moins de 360 px) */
++@media (max-width:359px){
++  .content{padding:12px;padding-bottom:calc(24px + env(safe-area-inset-bottom))}
++  .topbar{padding-left:8px;padding-right:12px;gap:6px}
++  .page-head{margin-bottom:14px}
++  .card,.kpi{padding:14px}
++  input,select,textarea{padding:10px}
++  .modal-body{padding:14px;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
++  .modal-head{padding:12px 12px 10px}
++  .search input{padding-left:38px}
++  .sale-line{grid-template-columns:minmax(0,1fr) 40px}
++  .sale-line>:first-child{grid-column:1/-1}
++  .purchase-line{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 40px}
++  .purchase-line>:first-child{grid-column:1/-1}
++  .table td::before{flex-basis:34%}
++  .bars{overflow-x:auto;overflow-y:hidden}
++  .bar{min-width:30px}
++}
++
++/* Modales de produit et de mouvement (product-modal.tsx, movement-modal.tsx) : mêmes règles que les autres fenêtres. */
++.modal-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:14px 16px 10px;border-bottom:1px solid var(--line)}
++.modal-heading h2{font-size:1.1rem;font-weight:700;line-height:1.3}
++.modal-heading p{margin-top:4px;color:var(--muted);font-size:.88rem;line-height:1.45}
++.eyebrow{margin-bottom:2px;color:var(--accent);font-size:.72rem;font-weight:800;letter-spacing:.08em}
++.icon-button{flex:none;display:grid;place-items:center;width:40px;height:40px;border:0;border-radius:10px;background:transparent;cursor:pointer}
++.icon-button:hover{background:rgba(127,127,140,.15)}
++.modal>form{display:flex;flex-direction:column;gap:14px;padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom));overflow-y:auto}
++.modal>form label{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:.9rem;font-weight:600;color:#2b2f38}
++.full-width{grid-column:1/-1}
++.form-error{padding:10px 12px;border-radius:10px;background:var(--danger-soft);color:#8f1717;font-size:.9rem}
++.modal-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px}
++.primary-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 18px;border-radius:11px;font-weight:600;font-size:.95rem;line-height:1.25;text-align:center;cursor:pointer}
++.primary-button{border:1px solid var(--accent);background:var(--accent);color:#fff}
++.primary-button:hover{background:var(--accent-dark)}
++.primary-button:disabled{opacity:.55;cursor:not-allowed}
++.secondary-button{border:1px solid var(--line);background:#fff;color:var(--ink)}
++.segmented{display:flex;flex-wrap:wrap;gap:8px}
++.segmented .seg{flex:1 1 120px;min-height:42px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;font-weight:600;font-size:.88rem;cursor:pointer}
++.segmented .seg.active{background:var(--black);border-color:var(--black);color:#fff}
++.stock-preview{padding:12px 14px;border-radius:10px;background:var(--bg);font-size:.92rem;line-height:1.5}
++.stock-preview .neg{color:var(--danger)}
++@media (max-width:479px){.modal-actions .primary-button,.modal-actions .secondary-button{flex:1 1 100%}}
++@media (max-width:359px){.modal-heading{padding:12px 12px 10px}.modal>form{padding:14px;padding-bottom:calc(14px + env(safe-area-inset-bottom))}}
++
++/* Lignes de liste : le texte long se coupe, les badges et boutons gardent leur taille. */
++.list-row>span:first-child{flex:1 1 0%;min-width:0;overflow-wrap:anywhere}
++.list-row .badge,.list-row .btn{flex:none}
++@media (max-width:479px){.list-row:has(.btn){flex-wrap:wrap}.list-row:has(.btn)>span:first-child{flex-basis:100%}}
++
++.auth-card h1{font-weight:800}
++.receipt h3{font-size:1.1rem;font-weight:800}
+Only in Gestion_de_Stock-main/db: 0005_multi_company_rbac.sql
+Only in Gestion_de_Stock-main/db: 0006_warehouses_balances.sql
+Only in Gestion_de_Stock-main/db: 0007_sync_triggers.sql
+Only in Gestion_de_Stock-main/db: 0008_drop_transitional_defaults.sql
+Only in Gestion_de_Stock-main/db: 0009_settings_to_company.sql
+diff -ru -x node_modules orig/Gestion_de_Stock-main/lib/auth.ts Gestion_de_Stock-main/lib/auth.ts
+--- orig/Gestion_de_Stock-main/lib/auth.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/lib/auth.ts	2026-10-21 08:00:33.722474891 +0000
+@@ -23,6 +23,8 @@
+   email: string;
+   name: string;
+   role: Role;
++  /** Entreprise active de la session (appartenance active). Toutes les requêtes métier doivent la filtrer. */
++  companyId: string;
+ };
+ 
+ 
+@@ -114,13 +116,22 @@
+     const parsed = parseToken(token);
+     if (!parsed) return null;
+     const sql = getSql();
++    // Une seule requête : utilisateur + entreprise active (appartenance active, entreprise active).
+     const rows = await sql`
+-      SELECT id, email, name, role, active, token_version AS "tokenVersion"
+-      FROM users WHERE id = ${parsed.userId}
++      SELECT u.id, u.email, u.name, u.role, u.active, u.token_version AS "tokenVersion", m.company_id AS "companyId"
++      FROM users u
++      JOIN company_memberships m ON m.user_id = u.id AND m.status = 'active'
++      JOIN companies c ON c.id = m.company_id AND c.status = 'active'
++      WHERE u.id = ${parsed.userId}
++      ORDER BY m.created_at ASC
++      LIMIT 1
+     `;
+     const row = rows[0];
+     if (!row || !row.active || row.tokenVersion !== parsed.tokenVersion || !isRole(row.role)) return null;
+-    return { id: Number(row.id), email: String(row.email), name: String(row.name), role: row.role };
++    return {
++      id: Number(row.id), email: String(row.email), name: String(row.name), role: row.role,
++      companyId: String(row.companyId)
++    };
+   } catch {
+     return null;
+   }
+@@ -166,8 +177,11 @@
+   try {
+     const sql = getSql();
+     await sql`
+-      INSERT INTO audit_log (user_id, action, entity, entity_id, detail)
+-      VALUES (${userId}, ${action}, ${entity ?? null}, ${entityId === undefined ? null : String(entityId)}, ${detail ?? null})
++      INSERT INTO audit_log (company_id, user_id, action, entity, entity_id, detail)
++      VALUES (
++        (SELECT company_id FROM company_memberships WHERE user_id = ${userId}::bigint AND status = 'active' ORDER BY created_at ASC LIMIT 1),
++        ${userId}, ${action}, ${entity ?? null}, ${entityId === undefined ? null : String(entityId)}, ${detail ?? null}
++      )
+     `;
+   } catch {
+     // Le journal ne doit jamais bloquer l'action principale.
+diff -ru -x node_modules orig/Gestion_de_Stock-main/lib/roles.ts Gestion_de_Stock-main/lib/roles.ts
+--- orig/Gestion_de_Stock-main/lib/roles.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/lib/roles.ts	2026-10-21 08:00:33.721558394 +0000
+@@ -9,6 +9,15 @@
+   seller: "Vendeur"
+ };
+ 
++/** Rôle RBAC (table roles) correspondant à chaque rôle historique de users.role. */
++export const RBAC_ROLE_NAMES: Record<Role, string> = {
++  super_admin: "Administrateur entreprise",
++  admin: "Administrateur entreprise",
++  manager: "Directeur",
++  storekeeper: "Gestionnaire de stock",
++  seller: "Vendeur / Caissier"
++};
++
+ export function isRole(value: unknown): value is Role {
+   return typeof value === "string" && (ROLES as readonly string[]).includes(value);
+ }
+diff -ru -x node_modules orig/Gestion_de_Stock-main/lib/stock.ts Gestion_de_Stock-main/lib/stock.ts
+--- orig/Gestion_de_Stock-main/lib/stock.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/lib/stock.ts	2026-10-21 08:01:02.467322738 +0000
+@@ -1,3 +1,5 @@
++// ATTENTION : module NON UTILISÉ par les routes actuelles (elles contiennent leurs propres requêtes).
++// Ses requêtes ne filtrent PAS par company_id : ne pas l'importer sans les adapter (voir app/api/movements/route.ts).
+ import type { NeonQueryFunction } from "@neondatabase/serverless";
+ 
+ type Sql = NeonQueryFunction<false, false>;
+Only in Gestion_de_Stock-main: scripts
+Only in Gestion_de_Stock-main: tsconfig.tsbuildinfo

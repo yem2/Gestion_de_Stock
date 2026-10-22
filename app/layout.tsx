@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import "@fontsource-variable/inter"; // police Inter embarquée (aucun appel externe, identique sur tous les appareils)
 import "./globals.css";
 
 export const metadata: Metadata = {

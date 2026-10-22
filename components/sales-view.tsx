@@ -34,7 +34,7 @@ export default function SalesView({ role }: { role: Role }) {
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const canWrite = can(role, "sales.write");
   const canCancel = can(role, "sales.cancel");
-  const productList = useMemo(() => products.data?.products ?? [], [products.data]);
+  const productList = products.data?.products ?? [];
 
   const total = useMemo(
     () => lines.reduce((sum, line) => {
