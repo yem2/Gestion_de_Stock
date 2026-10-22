@@ -26,5 +26,7 @@ export const PAYMENT_LABELS: Record<string, string> = {
 export const MOVEMENT_LABELS: Record<string, string> = {
   in: "Entrée",
   out: "Sortie",
-  adjustment: "Inventaire"
+  adjustment: "Inventaire",
+  transfer_out: "Transfert sortant",
+  transfer_in: "Transfert entrant"
 };

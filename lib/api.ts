@@ -42,3 +42,27 @@ export function isUnique(error: unknown) {
 export function isForeignKey(error: unknown) {
   return /foreign key/i.test(errorText(error));
 }
+
+export function isCheckViolation(error: unknown) {
+  return /check constraint/i.test(errorText(error));
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: string) {
+  return UUID_PATTERN.test(value);
+}
+
+/** Message affiché quand une opération réduit le stock de l'entrepôt principal au-delà de ce qu'il contient. */
+export const MAIN_WAREHOUSE_STOCK_ERROR =
+  "Stock insuffisant dans l’entrepôt principal (une partie du stock se trouve peut-être dans un autre entrepôt).";
+
+/** Traduit les erreurs levées par les fonctions SQL de transfert (ship_transfer, receive_transfer, cancel_transfer). */
+export function transferFailure(error: unknown) {
+  const text = errorText(error);
+  if (/TRANSFER_NOT_FOUND/.test(text)) return fail("Transfert introuvable.", 404);
+  if (/TRANSFER_BAD_STATUS/.test(text)) return fail("Ce transfert n’est pas dans un état qui permet cette action.", 409);
+  if (/TRANSFER_EMPTY/.test(text)) return fail("Ce transfert ne contient aucune ligne.", 400);
+  if (/INSUFFICIENT_STOCK/.test(text)) return fail("Stock disponible insuffisant dans l’entrepôt d’origine.", 409);
+  return null;
+}

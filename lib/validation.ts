@@ -129,3 +129,44 @@ export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Saisissez votre mot de passe actuel").max(128),
   newPassword: passwordSchema
 });
+
+const warehouseId = z.string().uuid("Entrepôt invalide");
+
+export const warehouseSchema = z.object({
+  name: z.string().trim().min(2, "Le nom doit contenir au moins 2 caractères").max(120),
+  code: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .min(2, "Le code doit contenir au moins 2 caractères")
+    .max(20)
+    .regex(/^[A-Z0-9_-]+$/, "Le code ne peut contenir que des lettres, chiffres, tirets")
+});
+
+export const warehouseUpdateSchema = warehouseSchema.partial().extend({
+  status: z.enum(["active", "inactive"]).optional()
+});
+
+export const transferSchema = z
+  .object({
+    sourceId: warehouseId,
+    destinationId: warehouseId,
+    note: optionalText(300),
+    lines: z
+      .array(
+        z.object({
+          productId: z.coerce.number().int().positive("Choisissez un produit"),
+          quantity: z.coerce.number().int("Quantité invalide").min(1, "La quantité doit être positive").max(100000000)
+        })
+      )
+      .min(1, "Ajoutez au moins un produit")
+      .max(200)
+  })
+  .refine((value) => value.sourceId !== value.destinationId, {
+    message: "Les entrepôts d’origine et de destination doivent être différents",
+    path: ["destinationId"]
+  })
+  .refine((value) => new Set(value.lines.map((line) => line.productId)).size === value.lines.length, {
+    message: "Un produit ne peut apparaître qu’une seule fois dans un transfert",
+    path: ["lines"]
+  });
