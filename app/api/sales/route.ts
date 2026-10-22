@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 import { authorize, logAudit } from "@/lib/auth";
 import { rolesFor } from "@/lib/roles";
-import { fail, isForeignKey, parseBody, serverError } from "@/lib/api";
+import { MAIN_WAREHOUSE_STOCK_ERROR, fail, isCheckViolation, isForeignKey, parseBody, serverError } from "@/lib/api";
 import { saleSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -85,6 +85,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ sale: { id: rows[0].id, total: rows[0].total } }, { status: 201 });
   } catch (error) {
     if (isForeignKey(error)) return fail("Client invalide.", 400);
+    if (isCheckViolation(error)) return fail(MAIN_WAREHOUSE_STOCK_ERROR, 409);
     return serverError("Impossible d’enregistrer la vente.");
   }
 }

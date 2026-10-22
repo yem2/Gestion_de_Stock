@@ -46,7 +46,7 @@ export async function GET(request: Request) {
         WHERE m.company_id = ${auth.user.companyId}::uuid
         ORDER BY m.created_at DESC LIMIT 5000
       `;
-      const labels: Record<string, string> = { in: "Entrée", out: "Sortie", adjustment: "Inventaire" };
+      const labels: Record<string, string> = { in: "Entrée", out: "Sortie", adjustment: "Inventaire", transfer_out: "Transfert sortant", transfer_in: "Transfert entrant" };
       body = csv(
         ["Date", "Produit", "Type", "Quantité", "Note", "Fournisseur", "Auteur"],
         rows.map((r) => [r.date, r.name, labels[String(r.movement_type)] ?? r.movement_type, r.quantity, r.note, r.supplier, r.author])
