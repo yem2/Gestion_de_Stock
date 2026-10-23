@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
-  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, ArrowRightLeft, Warehouse, X
+  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Warehouse, X
 } from "lucide-react";
 import { can, type Permission, type Role } from "@/lib/roles";
 
@@ -17,6 +17,7 @@ const NAV: { href: string; label: string; icon: typeof Package; permission?: Per
   { href: "/mouvements", label: "Mouvements", icon: ArrowLeftRight, permission: "movements.view" },
   { href: "/entrepots", label: "Entrepôts", icon: Warehouse, permission: "warehouses.view" },
   { href: "/transferts", label: "Transferts", icon: ArrowRightLeft, permission: "transfers.view" },
+  { href: "/inventaires", label: "Inventaires", icon: ClipboardCheck, permission: "inventory.view" },
   { href: "/ventes", label: "Ventes", icon: ShoppingCart, permission: "sales.view" },
   { href: "/achats", label: "Achats", icon: ClipboardList, permission: "purchases.view" },
   { href: "/clients", label: "Clients", icon: Users, permission: "customers.view" },
