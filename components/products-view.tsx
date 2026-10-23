@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { api, useApi } from "@/lib/client";
 import { money } from "@/lib/format";
@@ -8,6 +8,72 @@ import { can, type Role } from "@/lib/roles";
 import { Alert, Empty, Field, Loading, Modal, PageHeader, StockBadge } from "@/components/ui";
 
 type Product = { id: string; sku: string; name: string; category: string; quantity: number; unitPrice: string; minQuantity: number };
+
+type Barcode = { id: string; barcode: string };
+
+/** Codes-barres d'un produit : un lecteur saisit le code puis appuie sur Entrée. */
+function BarcodesSection({ productId, canWrite }: { productId: string; canWrite: boolean }) {
+  const [codes, setCodes] = useState<Barcode[] | null>(null);
+  const [value, setValue] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api<{ barcodes: Barcode[] }>(`/api/products/${productId}/barcodes`)
+      .then((data) => setCodes(data.barcodes))
+      .catch((e) => setError(e instanceof Error ? e.message : "Chargement impossible."));
+  }, [productId]);
+
+  async function add() {
+    const barcode = value.trim();
+    if (!barcode) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<{ barcode: Barcode }>(`/api/products/${productId}/barcodes`, { method: "POST", body: JSON.stringify({ barcode }) });
+      setCodes((current) => [...(current ?? []), result.barcode]);
+      setValue("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ajout impossible.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(code: Barcode) {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/products/${productId}/barcodes/${code.id}`, { method: "DELETE" });
+      setCodes((current) => (current ?? []).filter((c) => c.id !== code.id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Suppression impossible.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 18 }}>
+      <p className="hint" style={{ marginBottom: 8 }}>Codes-barres</p>
+      {error && <Alert>{error}</Alert>}
+      {codes && codes.length === 0 && <p className="hint">Aucun code-barres enregistré.</p>}
+      {codes?.map((c) => (
+        <div className="list-row" key={c.id}>
+          <span>{c.barcode}</span>
+          {canWrite && <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => remove(c)}>Retirer</button>}
+        </div>
+      ))}
+      {canWrite && (
+        <div className="sale-line" style={{ marginTop: 8 }}>
+          <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Scanner ou saisir un code, puis Entrée" aria-label="Nouveau code-barres" maxLength={64} autoComplete="off"
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void add(); } }} />
+          <button type="button" className="btn btn-sm" disabled={busy || !value.trim()} onClick={() => void add()}>Ajouter</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function ProductsView({ role }: { role: Role }) {
   const { data, error, loading, reload } = useApi<{ products: Product[] }>("/api/products");
@@ -135,6 +201,7 @@ export default function ProductsView({ role }: { role: Role }) {
               <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
             </div>
           </form>
+          {current && <BarcodesSection productId={current.id} canWrite={canWrite} />}
         </Modal>
       )}
     </>

@@ -31,6 +31,8 @@ export default function SalesView({ role }: { role: Role }) {
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [scan, setScan] = useState("");
+  const [scanMessage, setScanMessage] = useState("");
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const canWrite = can(role, "sales.write");
   const canCancel = can(role, "sales.cancel");
@@ -49,7 +51,38 @@ export default function SalesView({ role }: { role: Role }) {
     setCustomerId("");
     setPayment("cash");
     setFormError("");
+    setScan("");
+    setScanMessage("");
     setOpen(true);
+  }
+
+  /** Ajoute (ou incrémente) le produit correspondant à un code-barres ou une référence. */
+  async function addByCode() {
+    const code = scan.trim();
+    if (!code) return;
+    setScanMessage("");
+    try {
+      const { product } = await api<{ product: Product }>(`/api/products/lookup?code=${encodeURIComponent(code)}`);
+      const id = String(product.id);
+      if (product.quantity <= 0) {
+        setScanMessage(`${product.name} : en rupture de stock.`);
+      } else {
+        setLines((current) => {
+          const existing = current.find((l) => l.productId === id);
+          if (existing) {
+            const next = Math.min((Number(existing.quantity) || 0) + 1, product.quantity);
+            return current.map((l) => (l.key === existing.key ? { ...l, quantity: String(next) } : l));
+          }
+          const blank = current.find((l) => l.productId === "");
+          if (blank) return current.map((l) => (l.key === blank.key ? { ...l, productId: id, quantity: "1" } : l));
+          return [...current, { key: Date.now(), productId: id, quantity: "1" }];
+        });
+        setScanMessage(`${product.name} ajouté.`);
+      }
+      setScan("");
+    } catch (e) {
+      setScanMessage(e instanceof Error ? e.message : "Recherche impossible.");
+    }
   }
 
   function updateLine(key: number, patch: Partial<Line>) {
@@ -153,6 +186,11 @@ export default function SalesView({ role }: { role: Role }) {
                 </select>
               </Field>
             </div>
+            <Field label="Scanner un code-barres ou saisir une référence" span>
+              <input value={scan} onChange={(e) => setScan(e.target.value)} placeholder="Scanner puis Entrée" autoComplete="off" maxLength={64}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addByCode(); } }} />
+            </Field>
+            {scanMessage && <p className="hint" style={{ margin: "6px 0 10px" }} role="status">{scanMessage}</p>}
             <p className="hint" style={{ marginBottom: 8 }}>Articles</p>
             {lines.map((line) => (
               <div className="sale-line" key={line.key}>
