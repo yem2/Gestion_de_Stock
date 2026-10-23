@@ -129,3 +129,12 @@ Migration : `db/0012_inventory_counts.sql` (à appliquer **avant** de déployer 
 - L'approbation (`approve_inventory_count`) applique les écarts *compté − attendu* au solde de l'entrepôt et au total du produit, et journalise un mouvement « Inventaire » par écart. Tout réussit ou rien n'est modifié.
 - Les produits non comptés ne sont pas modifiés. Si le stock a baissé entre le comptage et l'approbation au point de rendre un écart négatif impossible, l'approbation est refusée et l'inventaire doit être recommencé.
 - Droits : comptage pour administrateurs, directeurs et magasiniers ; approbation pour administrateurs et directeurs.
+
+## Codes-barres
+
+Aucune migration : la table `product_barcodes` (migration 0010) est utilisée telle quelle.
+
+- Un produit peut avoir plusieurs codes-barres ; un code est unique par entreprise (le même code peut exister dans deux entreprises différentes).
+- Ajout et retrait depuis la fenêtre « Modifier le produit » : un lecteur saisit le code puis envoie Entrée.
+- Dans une nouvelle vente, le champ de scan retrouve le produit par code-barres, sinon par référence exacte. Un second scan du même produit augmente la quantité, dans la limite du stock. Les produits en rupture sont refusés.
+- Un lecteur de codes-barres USB ou Bluetooth se comporte comme un clavier : aucun réglage particulier n'est nécessaire.

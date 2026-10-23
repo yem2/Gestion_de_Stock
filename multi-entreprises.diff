@@ -1,6 +1,6 @@
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/README.md Gestion_de_Stock-main/README.md
 --- orig/Gestion_de_Stock-main/README.md	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/README.md	2026-10-23 07:56:12.391827868 +0000
++++ Gestion_de_Stock-main/README.md	2026-10-23 11:55:20.070962229 +0000
 @@ -28,7 +28,7 @@
  2. Installe les dépendances : `npm install`
  3. Copie `.env.example` vers `.env.local`.
@@ -10,7 +10,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/REA
  6. Lance `npm run dev`, puis ouvre `http://localhost:3000`.
  
  Sans `DATABASE_URL` et la migration, l'interface s'affiche mais les données et l'ajout de produits ne fonctionnent pas.
-@@ -86,3 +86,46 @@
+@@ -86,3 +86,55 @@
  - **Achats** : commandes aux fournisseurs (articles, quantités, coût unitaire). « Réceptionner » passe la commande à *reçue*, augmente le stock et trace les entrées dans la même requête SQL ; une commande ne peut être reçue qu'une fois. Annulation possible tant qu'elle n'est pas reçue.
  - **Journal d'activité** (administrateurs) : les 300 dernières actions (connexions, produits, ventes, achats, exports, paramètres…) avec filtre.
  - **Paramètres** : changement de son propre mot de passe (ancien mot de passe exigé, autres sessions fermées) et informations de l'entreprise (nom, adresse, téléphone, message) reprises sur les reçus de vente.
@@ -57,6 +57,15 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/REA
 +- L'approbation (`approve_inventory_count`) applique les écarts *compté − attendu* au solde de l'entrepôt et au total du produit, et journalise un mouvement « Inventaire » par écart. Tout réussit ou rien n'est modifié.
 +- Les produits non comptés ne sont pas modifiés. Si le stock a baissé entre le comptage et l'approbation au point de rendre un écart négatif impossible, l'approbation est refusée et l'inventaire doit être recommencé.
 +- Droits : comptage pour administrateurs, directeurs et magasiniers ; approbation pour administrateurs et directeurs.
++
++## Codes-barres
++
++Aucune migration : la table `product_barcodes` (migration 0010) est utilisée telle quelle.
++
++- Un produit peut avoir plusieurs codes-barres ; un code est unique par entreprise (le même code peut exister dans deux entreprises différentes).
++- Ajout et retrait depuis la fenêtre « Modifier le produit » : un lecteur saisit le code puis envoie Entrée.
++- Dans une nouvelle vente, le champ de scan retrouve le produit par code-barres, sinon par référence exacte. Un second scan du même produit augmente la quantité, dans la limite du stock. Les produits en rupture sont refusés.
++- Un lecteur de codes-barres USB ou Bluetooth se comporte comme un clavier : aucun réglage particulier n'est nécessaire.
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/audit/route.ts Gestion_de_Stock-main/app/api/audit/route.ts
 --- orig/Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-21 08:00:33.729401120 +0000
@@ -472,6 +481,93 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
        WHERE r.used_at IS NULL AND r.token_hash IS NULL AND r.expires_at > NOW() AND u.active = TRUE
        ORDER BY r.requested_at DESC LIMIT 50
      `;
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/products/[id]/barcodes/[barcodeId]/route.ts Gestion_de_Stock-main/app/api/products/[id]/barcodes/[barcodeId]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/products/[id]/barcodes/[barcodeId]/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/products/[id]/barcodes/[barcodeId]/route.ts	2026-10-23 11:54:47.074972786 +0000
+@@ -0,0 +1,28 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, parseId, serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++export async function DELETE(request: Request, context: { params: Promise<{ id: string; barcodeId: string }> }) {
++  const auth = await authorize(request, rolesFor("products.write"));
++  if ("error" in auth) return auth.error;
++  const params = await context.params;
++  const id = parseId(params.id);
++  if (!id || !isUuid(params.barcodeId)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      DELETE FROM product_barcodes
++      WHERE id = ${params.barcodeId}::uuid AND product_id = ${id}::bigint AND company_id = ${auth.user.companyId}::uuid
++      RETURNING barcode
++    `;
++    if (rows.length === 0) return fail("Code-barres introuvable.", 404);
++    await logAudit(auth.user.id, "barcode_remove", "product", id, String(rows[0].barcode));
++    return NextResponse.json({ ok: true });
++  } catch {
++    return serverError("Impossible de supprimer le code-barres.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/products/[id]/barcodes/route.ts Gestion_de_Stock-main/app/api/products/[id]/barcodes/route.ts
+--- orig/Gestion_de_Stock-main/app/api/products/[id]/barcodes/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/products/[id]/barcodes/route.ts	2026-10-23 11:54:47.074152128 +0000
+@@ -0,0 +1,51 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isForeignKey, isUnique, parseBody, parseId, serverError } from "@/lib/api";
++import { barcodeSchema } from "@/lib/validation";
++
++export const runtime = "nodejs";
++
++type Context = { params: Promise<{ id: string }> };
++
++export async function GET(request: Request, context: Context) {
++  const auth = await authorize(request);
++  if ("error" in auth) return auth.error;
++  const id = parseId((await context.params).id);
++  if (!id) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    const barcodes = await sql`
++      SELECT id, barcode FROM product_barcodes
++      WHERE company_id = ${auth.user.companyId}::uuid AND product_id = ${id}::bigint
++      ORDER BY created_at ASC
++    `;
++    return NextResponse.json({ barcodes });
++  } catch {
++    return serverError();
++  }
++}
++
++export async function POST(request: Request, context: Context) {
++  const auth = await authorize(request, rolesFor("products.write"));
++  if ("error" in auth) return auth.error;
++  const id = parseId((await context.params).id);
++  if (!id) return fail("Identifiant invalide.");
++  const body = await parseBody(request, barcodeSchema);
++  if ("error" in body) return body.error;
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      INSERT INTO product_barcodes (company_id, product_id, barcode)
++      VALUES (${auth.user.companyId}::uuid, ${id}::bigint, ${body.data.barcode})
++      RETURNING id, barcode
++    `;
++    await logAudit(auth.user.id, "barcode_add", "product", id, body.data.barcode);
++    return NextResponse.json({ barcode: rows[0] }, { status: 201 });
++  } catch (error) {
++    if (isUnique(error)) return fail("Ce code-barres est déjà utilisé par un produit.", 409);
++    if (isForeignKey(error)) return fail("Produit introuvable.", 404);
++    return serverError("Impossible d’ajouter le code-barres.");
++  }
++}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/products/[id]/route.ts Gestion_de_Stock-main/app/api/products/[id]/route.ts
 --- orig/Gestion_de_Stock-main/app/api/products/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/products/[id]/route.ts	2026-10-21 08:00:33.723323429 +0000
@@ -493,6 +589,42 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
      if (!rows[0]) return fail("Produit introuvable.", 404);
      await logAudit(auth.user.id, "product_archive", "product", id);
      return NextResponse.json({ ok: true });
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/products/lookup/route.ts Gestion_de_Stock-main/app/api/products/lookup/route.ts
+--- orig/Gestion_de_Stock-main/app/api/products/lookup/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/products/lookup/route.ts	2026-10-23 11:54:47.072902629 +0000
+@@ -0,0 +1,32 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize } from "@/lib/auth";
++import { fail, serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++/** Retrouve un produit par code-barres, sinon par référence exacte (scan ou saisie en caisse). */
++export async function GET(request: Request) {
++  const auth = await authorize(request);
++  if ("error" in auth) return auth.error;
++  const code = (new URL(request.url).searchParams.get("code") ?? "").trim();
++  if (code.length < 1 || code.length > 64) return fail("Code invalide.");
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      SELECT p.id, p.sku, p.name, p.quantity, p.unit_price AS "unitPrice"
++      FROM products p
++      WHERE p.company_id = ${auth.user.companyId}::uuid AND p.archived = FALSE
++        AND (
++          p.id IN (SELECT b.product_id FROM product_barcodes b WHERE b.company_id = ${auth.user.companyId}::uuid AND b.barcode = ${code})
++          OR LOWER(p.sku) = LOWER(${code})
++        )
++      ORDER BY (p.id IN (SELECT b.product_id FROM product_barcodes b WHERE b.company_id = ${auth.user.companyId}::uuid AND b.barcode = ${code})) DESC
++      LIMIT 1
++    `;
++    if (rows.length === 0) return fail("Aucun produit ne correspond à ce code.", 404);
++    return NextResponse.json({ product: rows[0] });
++  } catch {
++    return serverError();
++  }
++}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/products/route.ts Gestion_de_Stock-main/app/api/products/route.ts
 --- orig/Gestion_de_Stock-main/app/api/products/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/products/route.ts	2026-10-21 08:00:33.722923634 +0000
@@ -1734,6 +1866,163 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
 +    </>
 +  );
 +}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/products-view.tsx Gestion_de_Stock-main/components/products-view.tsx
+--- orig/Gestion_de_Stock-main/components/products-view.tsx	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/components/products-view.tsx	2026-10-23 11:54:47.118225459 +0000
+@@ -1,6 +1,6 @@
+ "use client";
+ 
+-import { useMemo, useState } from "react";
++import { useEffect, useMemo, useState } from "react";
+ import { Plus, Search } from "lucide-react";
+ import { api, useApi } from "@/lib/client";
+ import { money } from "@/lib/format";
+@@ -9,6 +9,72 @@
+ 
+ type Product = { id: string; sku: string; name: string; category: string; quantity: number; unitPrice: string; minQuantity: number };
+ 
++type Barcode = { id: string; barcode: string };
++
++/** Codes-barres d'un produit : un lecteur saisit le code puis appuie sur Entrée. */
++function BarcodesSection({ productId, canWrite }: { productId: string; canWrite: boolean }) {
++  const [codes, setCodes] = useState<Barcode[] | null>(null);
++  const [value, setValue] = useState("");
++  const [error, setError] = useState("");
++  const [busy, setBusy] = useState(false);
++
++  useEffect(() => {
++    api<{ barcodes: Barcode[] }>(`/api/products/${productId}/barcodes`)
++      .then((data) => setCodes(data.barcodes))
++      .catch((e) => setError(e instanceof Error ? e.message : "Chargement impossible."));
++  }, [productId]);
++
++  async function add() {
++    const barcode = value.trim();
++    if (!barcode) return;
++    setBusy(true);
++    setError("");
++    try {
++      const result = await api<{ barcode: Barcode }>(`/api/products/${productId}/barcodes`, { method: "POST", body: JSON.stringify({ barcode }) });
++      setCodes((current) => [...(current ?? []), result.barcode]);
++      setValue("");
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Ajout impossible.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function remove(code: Barcode) {
++    setBusy(true);
++    setError("");
++    try {
++      await api(`/api/products/${productId}/barcodes/${code.id}`, { method: "DELETE" });
++      setCodes((current) => (current ?? []).filter((c) => c.id !== code.id));
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Suppression impossible.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  return (
++    <div style={{ marginTop: 18 }}>
++      <p className="hint" style={{ marginBottom: 8 }}>Codes-barres</p>
++      {error && <Alert>{error}</Alert>}
++      {codes && codes.length === 0 && <p className="hint">Aucun code-barres enregistré.</p>}
++      {codes?.map((c) => (
++        <div className="list-row" key={c.id}>
++          <span>{c.barcode}</span>
++          {canWrite && <button type="button" className="btn btn-sm btn-danger" disabled={busy} onClick={() => remove(c)}>Retirer</button>}
++        </div>
++      ))}
++      {canWrite && (
++        <div className="sale-line" style={{ marginTop: 8 }}>
++          <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Scanner ou saisir un code, puis Entrée" aria-label="Nouveau code-barres" maxLength={64} autoComplete="off"
++            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void add(); } }} />
++          <button type="button" className="btn btn-sm" disabled={busy || !value.trim()} onClick={() => void add()}>Ajouter</button>
++        </div>
++      )}
++    </div>
++  );
++}
++
+ export default function ProductsView({ role }: { role: Role }) {
+   const { data, error, loading, reload } = useApi<{ products: Product[] }>("/api/products");
+   const [query, setQuery] = useState("");
+@@ -135,6 +201,7 @@
+               <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
+             </div>
+           </form>
++          {current && <BarcodesSection productId={current.id} canWrite={canWrite} />}
+         </Modal>
+       )}
+     </>
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/sales-view.tsx Gestion_de_Stock-main/components/sales-view.tsx
+--- orig/Gestion_de_Stock-main/components/sales-view.tsx	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/components/sales-view.tsx	2026-10-23 11:54:47.119277698 +0000
+@@ -31,6 +31,8 @@
+   const [formError, setFormError] = useState("");
+   const [saving, setSaving] = useState(false);
+   const [notice, setNotice] = useState("");
++  const [scan, setScan] = useState("");
++  const [scanMessage, setScanMessage] = useState("");
+   const [receipt, setReceipt] = useState<Receipt | null>(null);
+   const canWrite = can(role, "sales.write");
+   const canCancel = can(role, "sales.cancel");
+@@ -49,9 +51,40 @@
+     setCustomerId("");
+     setPayment("cash");
+     setFormError("");
++    setScan("");
++    setScanMessage("");
+     setOpen(true);
+   }
+ 
++  /** Ajoute (ou incrémente) le produit correspondant à un code-barres ou une référence. */
++  async function addByCode() {
++    const code = scan.trim();
++    if (!code) return;
++    setScanMessage("");
++    try {
++      const { product } = await api<{ product: Product }>(`/api/products/lookup?code=${encodeURIComponent(code)}`);
++      const id = String(product.id);
++      if (product.quantity <= 0) {
++        setScanMessage(`${product.name} : en rupture de stock.`);
++      } else {
++        setLines((current) => {
++          const existing = current.find((l) => l.productId === id);
++          if (existing) {
++            const next = Math.min((Number(existing.quantity) || 0) + 1, product.quantity);
++            return current.map((l) => (l.key === existing.key ? { ...l, quantity: String(next) } : l));
++          }
++          const blank = current.find((l) => l.productId === "");
++          if (blank) return current.map((l) => (l.key === blank.key ? { ...l, productId: id, quantity: "1" } : l));
++          return [...current, { key: Date.now(), productId: id, quantity: "1" }];
++        });
++        setScanMessage(`${product.name} ajouté.`);
++      }
++      setScan("");
++    } catch (e) {
++      setScanMessage(e instanceof Error ? e.message : "Recherche impossible.");
++    }
++  }
++
+   function updateLine(key: number, patch: Partial<Line>) {
+     setLines((current) => current.map((line) => (line.key === key ? { ...line, ...patch } : line)));
+   }
+@@ -153,6 +186,11 @@
+                 </select>
+               </Field>
+             </div>
++            <Field label="Scanner un code-barres ou saisir une référence" span>
++              <input value={scan} onChange={(e) => setScan(e.target.value)} placeholder="Scanner puis Entrée" autoComplete="off" maxLength={64}
++                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void addByCode(); } }} />
++            </Field>
++            {scanMessage && <p className="hint" style={{ margin: "6px 0 10px" }} role="status">{scanMessage}</p>}
+             <p className="hint" style={{ marginBottom: 8 }}>Articles</p>
+             {lines.map((line) => (
+               <div className="sale-line" key={line.key}>
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/transfers-view.tsx Gestion_de_Stock-main/components/transfers-view.tsx
 --- orig/Gestion_de_Stock-main/components/transfers-view.tsx	1970-01-01 00:00:00.000000000 +0000
 +++ Gestion_de_Stock-main/components/transfers-view.tsx	2026-10-22 11:32:39.460835366 +0000
@@ -2957,8 +3246,8 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
  type Sql = NeonQueryFunction<false, false>;
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/validation.ts Gestion_de_Stock-main/lib/validation.ts
 --- orig/Gestion_de_Stock-main/lib/validation.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/validation.ts	2026-10-23 07:55:27.619148243 +0000
-@@ -129,3 +129,58 @@
++++ Gestion_de_Stock-main/lib/validation.ts	2026-10-23 11:54:47.066960268 +0000
+@@ -129,3 +129,67 @@
    currentPassword: z.string().min(1, "Saisissez votre mot de passe actuel").max(128),
    newPassword: passwordSchema
  });
@@ -3016,6 +3305,15 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +    )
 +    .min(1)
 +    .max(5000)
++});
++
++export const barcodeSchema = z.object({
++  barcode: z
++    .string()
++    .trim()
++    .min(3, "Le code-barres doit contenir au moins 3 caractères")
++    .max(64, "Le code-barres est trop long")
++    .regex(/^[A-Za-z0-9._\/-]+$/, "Le code-barres ne peut contenir que des lettres, chiffres et . _ / -")
 +});
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/scripts/check-isolation.mjs Gestion_de_Stock-main/scripts/check-isolation.mjs
 --- orig/Gestion_de_Stock-main/scripts/check-isolation.mjs	1970-01-01 00:00:00.000000000 +0000

@@ -184,3 +184,12 @@ export const inventorySaveSchema = z.object({
     .min(1)
     .max(5000)
 });
+
+export const barcodeSchema = z.object({
+  barcode: z
+    .string()
+    .trim()
+    .min(3, "Le code-barres doit contenir au moins 3 caractères")
+    .max(64, "Le code-barres est trop long")
+    .regex(/^[A-Za-z0-9._\/-]+$/, "Le code-barres ne peut contenir que des lettres, chiffres et . _ / -")
+});
