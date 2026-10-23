@@ -66,3 +66,14 @@ export function transferFailure(error: unknown) {
   if (/INSUFFICIENT_STOCK/.test(text)) return fail("Stock disponible insuffisant dans l’entrepôt d’origine.", 409);
   return null;
 }
+
+/** Traduit les erreurs levées par approve_inventory_count. */
+export function inventoryFailure(error: unknown) {
+  const text = errorText(error);
+  if (/INVENTORY_NOT_FOUND/.test(text)) return fail("Inventaire introuvable.", 404);
+  if (/INVENTORY_BAD_STATUS/.test(text)) return fail("Cet inventaire n’est pas dans un état qui permet cette action.", 409);
+  if (/INVENTORY_STOCK_CHANGED/.test(text) || isCheckViolation(error)) {
+    return fail("Le stock a changé depuis le comptage : un écart négatif ne peut plus être appliqué. Annulez cet inventaire et recommencez.", 409);
+  }
+  return null;
+}

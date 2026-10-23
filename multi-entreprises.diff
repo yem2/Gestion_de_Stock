@@ -1,6 +1,6 @@
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/README.md Gestion_de_Stock-main/README.md
 --- orig/Gestion_de_Stock-main/README.md	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/README.md	2026-10-22 11:33:46.819767089 +0000
++++ Gestion_de_Stock-main/README.md	2026-10-23 07:56:12.391827868 +0000
 @@ -28,7 +28,7 @@
  2. Installe les dépendances : `npm install`
  3. Copie `.env.example` vers `.env.local`.
@@ -10,7 +10,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/REA
  6. Lance `npm run dev`, puis ouvre `http://localhost:3000`.
  
  Sans `DATABASE_URL` et la migration, l'interface s'affiche mais les données et l'ajout de produits ne fonctionnent pas.
-@@ -86,3 +86,36 @@
+@@ -86,3 +86,46 @@
  - **Achats** : commandes aux fournisseurs (articles, quantités, coût unitaire). « Réceptionner » passe la commande à *reçue*, augmente le stock et trace les entrées dans la même requête SQL ; une commande ne peut être reçue qu'une fois. Annulation possible tant qu'elle n'est pas reçue.
  - **Journal d'activité** (administrateurs) : les 300 dernières actions (connexions, produits, ventes, achats, exports, paramètres…) avec filtre.
  - **Paramètres** : changement de son propre mot de passe (ancien mot de passe exigé, autres sessions fermées) et informations de l'entreprise (nom, adresse, téléphone, message) reprises sur les reçus de vente.
@@ -47,6 +47,16 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/REA
 +- Une vente ou une sortie supérieure au stock de l'entrepôt principal est refusée (409) même si le total est suffisant.
 +- Les numéros de transfert (`TR-AAAA-00001`) sont générés côté serveur, sans doublon, via `document_sequences`.
 +- Limite actuelle : la réception est complète (pas de réception partielle) ; les ventes ne choisissent pas encore l'entrepôt.
++
++## Phase 03 — Inventaires physiques
++
++Migration : `db/0012_inventory_counts.sql` (à appliquer **avant** de déployer le code).
++
++- Un inventaire fige le stock attendu de chaque produit pour un entrepôt, puis les quantités comptées sont saisies (statuts : en cours → à approuver → approuvé, ou annulé).
++- Une seule session active par entrepôt.
++- L'approbation (`approve_inventory_count`) applique les écarts *compté − attendu* au solde de l'entrepôt et au total du produit, et journalise un mouvement « Inventaire » par écart. Tout réussit ou rien n'est modifié.
++- Les produits non comptés ne sont pas modifiés. Si le stock a baissé entre le comptage et l'approbation au point de rendre un écart négatif impossible, l'approbation est refusée et l'inventaire doit être recommencé.
++- Droits : comptage pour administrateurs, directeurs et magasiniers ; approbation pour administrateurs et directeurs.
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/audit/route.ts Gestion_de_Stock-main/app/api/audit/route.ts
 --- orig/Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-21 08:00:33.729401120 +0000
@@ -137,6 +147,231 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
        RETURNING id, name, phone, email, created_at AS "createdAt"
      `;
      await logAudit(auth.user.id, "customer_create", "customer", Number(rows[0].id));
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/inventory-counts/[id]/approve/route.ts Gestion_de_Stock-main/app/api/inventory-counts/[id]/approve/route.ts
+--- orig/Gestion_de_Stock-main/app/api/inventory-counts/[id]/approve/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/inventory-counts/[id]/approve/route.ts	2026-10-23 07:55:27.630793505 +0000
+@@ -0,0 +1,23 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, inventoryFailure, isUuid, serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++/** Applique tous les écarts dans une seule fonction SQL : tout réussit ou rien n'est modifié. */
++export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("inventory.approve"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    const rows = await sql`SELECT approve_inventory_count(${auth.user.companyId}::uuid, ${id}::uuid, ${auth.user.id}::bigint) AS adjusted`;
++    await logAudit(auth.user.id, "inventory_approve", "inventory_count", id, String(rows[0]?.adjusted ?? 0));
++    return NextResponse.json({ ok: true, adjusted: rows[0]?.adjusted ?? 0 });
++  } catch (error) {
++    return inventoryFailure(error) ?? serverError("Impossible d’approuver l’inventaire.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/inventory-counts/[id]/cancel/route.ts Gestion_de_Stock-main/app/api/inventory-counts/[id]/cancel/route.ts
+--- orig/Gestion_de_Stock-main/app/api/inventory-counts/[id]/cancel/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/inventory-counts/[id]/cancel/route.ts	2026-10-23 07:55:27.629708868 +0000
+@@ -0,0 +1,27 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("inventory.count"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      UPDATE inventory_counts SET status = 'cancelled'
++      WHERE id = ${id}::uuid AND company_id = ${auth.user.companyId}::uuid AND status IN ('open', 'submitted')
++      RETURNING id
++    `;
++    if (rows.length === 0) return fail("Cet inventaire n’est pas dans un état qui permet cette action.", 409);
++    await logAudit(auth.user.id, "inventory_cancel", "inventory_count", id);
++    return NextResponse.json({ ok: true });
++  } catch {
++    return serverError("Impossible d’annuler l’inventaire.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/inventory-counts/[id]/route.ts Gestion_de_Stock-main/app/api/inventory-counts/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/inventory-counts/[id]/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/inventory-counts/[id]/route.ts	2026-10-23 07:55:27.627779209 +0000
+@@ -0,0 +1,53 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, parseBody, serverError } from "@/lib/api";
++import { inventorySaveSchema } from "@/lib/validation";
++
++export const runtime = "nodejs";
++
++export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("inventory.view"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    const lines = await sql`
++      SELECT l.product_id AS "productId", p.sku, p.name,
++             l.expected_quantity::int AS expected, l.counted_quantity::int AS counted
++      FROM inventory_count_lines l
++      JOIN products p ON p.id = l.product_id AND p.company_id = l.company_id
++      WHERE l.count_id = ${id}::uuid AND l.company_id = ${auth.user.companyId}::uuid
++      ORDER BY p.name ASC
++    `;
++    return NextResponse.json({ lines });
++  } catch {
++    return serverError();
++  }
++}
++
++/** Enregistre les quantités comptées (uniquement tant que l'inventaire est ouvert). */
++export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("inventory.count"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  const body = await parseBody(request, inventorySaveSchema);
++  if ("error" in body) return body.error;
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      UPDATE inventory_count_lines l SET counted_quantity = x.counted
++      FROM inventory_counts c, jsonb_to_recordset(${JSON.stringify(body.data.lines)}::jsonb) AS x("productId" bigint, counted numeric)
++      WHERE c.id = ${id}::uuid AND c.company_id = ${auth.user.companyId}::uuid AND c.status = 'open'
++        AND l.count_id = c.id AND l.company_id = c.company_id AND l.product_id = x."productId"
++      RETURNING l.id
++    `;
++    if (rows.length === 0) return fail("Cet inventaire n’est plus modifiable.", 409);
++    return NextResponse.json({ ok: true, saved: rows.length });
++  } catch {
++    return serverError("Impossible d’enregistrer le comptage.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/inventory-counts/[id]/submit/route.ts Gestion_de_Stock-main/app/api/inventory-counts/[id]/submit/route.ts
+--- orig/Gestion_de_Stock-main/app/api/inventory-counts/[id]/submit/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/inventory-counts/[id]/submit/route.ts	2026-10-23 07:55:27.628804352 +0000
+@@ -0,0 +1,27 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("inventory.count"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      UPDATE inventory_counts SET status = 'submitted'
++      WHERE id = ${id}::uuid AND company_id = ${auth.user.companyId}::uuid AND status = 'open'
++      RETURNING id
++    `;
++    if (rows.length === 0) return fail("Cet inventaire n’est pas dans un état qui permet cette action.", 409);
++    await logAudit(auth.user.id, "inventory_submit", "inventory_count", id);
++    return NextResponse.json({ ok: true });
++  } catch {
++    return serverError("Impossible de soumettre l’inventaire.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/inventory-counts/route.ts Gestion_de_Stock-main/app/api/inventory-counts/route.ts
+--- orig/Gestion_de_Stock-main/app/api/inventory-counts/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/inventory-counts/route.ts	2026-10-23 07:55:27.626855176 +0000
+@@ -0,0 +1,75 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isForeignKey, isUnique, parseBody, serverError } from "@/lib/api";
++import { inventoryCreateSchema } from "@/lib/validation";
++
++export const runtime = "nodejs";
++
++export async function GET(request: Request) {
++  const auth = await authorize(request, rolesFor("inventory.view"));
++  if ("error" in auth) return auth.error;
++  try {
++    const sql = getSql();
++    const counts = await sql`
++      SELECT c.id, c.count_number AS number, c.status, c.created_at AS "createdAt", c.approved_at AS "approvedAt",
++             w.name AS warehouse, u.name AS "createdBy",
++             (SELECT COUNT(*) FILTER (WHERE l.counted_quantity IS NOT NULL)::int FROM inventory_count_lines l WHERE l.count_id = c.id) AS counted,
++             (SELECT COUNT(*)::int FROM inventory_count_lines l WHERE l.count_id = c.id) AS total,
++             (SELECT COUNT(*) FILTER (WHERE l.counted_quantity IS NOT NULL AND l.counted_quantity <> l.expected_quantity)::int FROM inventory_count_lines l WHERE l.count_id = c.id) AS variances
++      FROM inventory_counts c
++      JOIN warehouses w ON w.id = c.warehouse_id
++      LEFT JOIN users u ON u.id = c.created_by
++      WHERE c.company_id = ${auth.user.companyId}::uuid
++      ORDER BY c.created_at DESC
++      LIMIT 100
++    `;
++    return NextResponse.json({ counts });
++  } catch {
++    return serverError();
++  }
++}
++
++/** Ouvre une session : le stock attendu de chaque produit est figé au moment de la création. */
++export async function POST(request: Request) {
++  const auth = await authorize(request, rolesFor("inventory.count"));
++  if ("error" in auth) return auth.error;
++  const body = await parseBody(request, inventoryCreateSchema);
++  if ("error" in body) return body.error;
++  const { warehouseId } = body.data;
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      WITH seq AS (
++        INSERT INTO document_sequences (company_id, document_type, period, next_value)
++        VALUES (${auth.user.companyId}::uuid, 'inventory_count', to_char(now(), 'YYYY'), 2)
++        ON CONFLICT (company_id, document_type, period)
++        DO UPDATE SET next_value = document_sequences.next_value + 1
++        RETURNING period, next_value - 1 AS n
++      ), c AS (
++        INSERT INTO inventory_counts (company_id, count_number, warehouse_id, created_by)
++        SELECT ${auth.user.companyId}::uuid, 'INV-' || seq.period || '-' || lpad(seq.n::text, 5, '0'), ${warehouseId}::uuid, ${auth.user.id}::bigint
++        FROM seq
++        WHERE EXISTS (SELECT 1 FROM warehouses WHERE id = ${warehouseId}::uuid AND company_id = ${auth.user.companyId}::uuid AND status = 'active')
++        RETURNING id, count_number
++      ), ins AS (
++        INSERT INTO inventory_count_lines (company_id, count_id, product_id, expected_quantity)
++        SELECT ${auth.user.companyId}::uuid, c.id, p.id, COALESCE(b.quantity_on_hand, 0)
++        FROM c
++        CROSS JOIN products p
++        LEFT JOIN stock_balances b ON b.product_id = p.id AND b.company_id = p.company_id AND b.warehouse_id = ${warehouseId}::uuid
++        WHERE p.company_id = ${auth.user.companyId}::uuid AND p.archived = FALSE
++        RETURNING 1
++      )
++      SELECT id, count_number AS number FROM c
++    `;
++    if (rows.length === 0) return fail("Entrepôt introuvable ou inactif.", 400);
++    await logAudit(auth.user.id, "inventory_create", "inventory_count", String(rows[0].id), String(rows[0].number));
++    return NextResponse.json({ id: rows[0].id, number: rows[0].number }, { status: 201 });
++  } catch (error) {
++    if (isUnique(error)) return fail("Un inventaire est déjà en cours pour cet entrepôt.", 409);
++    if (isForeignKey(error)) return fail("Entrepôt invalide.", 400);
++    return serverError("Impossible de créer l’inventaire.");
++  }
++}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/movements/route.ts Gestion_de_Stock-main/app/api/movements/route.ts
 --- orig/Gestion_de_Stock-main/app/api/movements/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/movements/route.ts	2026-10-22 11:31:30.697950423 +0000
@@ -1207,6 +1442,18 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +
 +.auth-card h1{font-weight:800}
 +.receipt h3{font-size:1.1rem;font-weight:800}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/inventaires/page.tsx Gestion_de_Stock-main/app/inventaires/page.tsx
+--- orig/Gestion_de_Stock-main/app/inventaires/page.tsx	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/inventaires/page.tsx	2026-10-23 07:55:27.625990101 +0000
+@@ -0,0 +1,8 @@
++import AppFrame from "@/components/app-frame";
++import InventoryView from "@/components/inventory-view";
++
++export const dynamic = "force-dynamic";
++
++export default function Page() {
++  return <AppFrame permission="inventory.view" render={(role) => <InventoryView role={role} />} />;
++}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/transferts/page.tsx Gestion_de_Stock-main/app/transferts/page.tsx
 --- orig/Gestion_de_Stock-main/app/transferts/page.tsx	1970-01-01 00:00:00.000000000 +0000
 +++ Gestion_de_Stock-main/app/transferts/page.tsx	2026-10-22 11:32:39.458962833 +0000
@@ -1221,25 +1468,272 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/app-shell.tsx Gestion_de_Stock-main/components/app-shell.tsx
 --- orig/Gestion_de_Stock-main/components/app-shell.tsx	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/components/app-shell.tsx	2026-10-22 11:32:42.969903185 +0000
++++ Gestion_de_Stock-main/components/app-shell.tsx	2026-10-23 07:55:27.620205379 +0000
 @@ -5,7 +5,7 @@
  import { useEffect, useState } from "react";
  import {
    Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
 -  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, X
-+  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, ArrowRightLeft, Warehouse, X
++  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Warehouse, X
  } from "lucide-react";
  import { can, type Permission, type Role } from "@/lib/roles";
  
-@@ -15,6 +15,8 @@
+@@ -15,6 +15,9 @@
    { href: "/", label: "Tableau de bord", icon: LayoutDashboard },
    { href: "/produits", label: "Produits", icon: Package },
    { href: "/mouvements", label: "Mouvements", icon: ArrowLeftRight, permission: "movements.view" },
 +  { href: "/entrepots", label: "Entrepôts", icon: Warehouse, permission: "warehouses.view" },
 +  { href: "/transferts", label: "Transferts", icon: ArrowRightLeft, permission: "transfers.view" },
++  { href: "/inventaires", label: "Inventaires", icon: ClipboardCheck, permission: "inventory.view" },
    { href: "/ventes", label: "Ventes", icon: ShoppingCart, permission: "sales.view" },
    { href: "/achats", label: "Achats", icon: ClipboardList, permission: "purchases.view" },
    { href: "/clients", label: "Clients", icon: Users, permission: "customers.view" },
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/inventory-view.tsx Gestion_de_Stock-main/components/inventory-view.tsx
+--- orig/Gestion_de_Stock-main/components/inventory-view.tsx	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/components/inventory-view.tsx	2026-10-23 07:56:01.785350191 +0000
+@@ -0,0 +1,242 @@
++"use client";
++
++import { useEffect, useMemo, useState } from "react";
++import { Plus } from "lucide-react";
++import { api, useApi } from "@/lib/client";
++import { dateTime } from "@/lib/format";
++import { can, type Role } from "@/lib/roles";
++import { Alert, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui";
++
++type Status = "open" | "submitted" | "approved" | "cancelled";
++type Count = {
++  id: string; number: string; status: Status; createdAt: string; approvedAt: string | null;
++  warehouse: string; createdBy: string | null; counted: number; total: number; variances: number;
++};
++type Warehouse = { id: string; name: string; code: string; status: "active" | "inactive" };
++type Line = { productId: number; sku: string; name: string; expected: number; counted: number | null };
++
++const STATUS: Record<Status, { label: string; badge: string }> = {
++  open: { label: "En cours", badge: "badge-muted" },
++  submitted: { label: "À approuver", badge: "badge-warn" },
++  approved: { label: "Approuvé", badge: "badge-ok" },
++  cancelled: { label: "Annulé", badge: "badge-danger" }
++};
++
++function NewCount({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string, number: string) => void }) {
++  const { data } = useApi<{ warehouses: Warehouse[] }>("/api/warehouses");
++  const warehouses = (data?.warehouses ?? []).filter((w) => w.status === "active");
++  const [warehouseId, setWarehouseId] = useState("");
++  const [error, setError] = useState("");
++  const [saving, setSaving] = useState(false);
++
++  async function submit(event: React.FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    setError("");
++    setSaving(true);
++    try {
++      const result = await api<{ id: string; number: string }>("/api/inventory-counts", { method: "POST", body: JSON.stringify({ warehouseId }) });
++      onCreated(result.id, result.number);
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Création impossible.");
++    } finally {
++      setSaving(false);
++    }
++  }
++
++  return (
++    <Modal title="Nouvel inventaire" onClose={onClose}>
++      <form onSubmit={submit}>
++        {error && <Alert>{error}</Alert>}
++        <p className="hint" style={{ marginBottom: 10 }}>Le stock attendu de chaque produit est figé à l’ouverture. Vous saisissez ensuite ce que vous comptez réellement.</p>
++        <div className="form-grid">
++          <Field label="Entrepôt à inventorier" span>
++            <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} required>
++              <option value="">Choisir…</option>
++              {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name} ({w.code})</option>)}
++            </select>
++          </Field>
++        </div>
++        <div className="form-actions">
++          <button type="button" className="btn" onClick={onClose}>Annuler</button>
++          <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Ouverture…" : "Ouvrir l’inventaire"}</button>
++        </div>
++      </form>
++    </Modal>
++  );
++}
++
++function CountModal({ count, role, onClose, onChanged }: { count: Count; role: Role; onClose: () => void; onChanged: (message: string) => void }) {
++  const [lines, setLines] = useState<Line[] | null>(null);
++  const [values, setValues] = useState<Record<number, string>>({});
++  const [query, setQuery] = useState("");
++  const [error, setError] = useState("");
++  const [busy, setBusy] = useState(false);
++  const editable = count.status === "open" && can(role, "inventory.count");
++
++  useEffect(() => {
++    api<{ lines: Line[] }>(`/api/inventory-counts/${count.id}`)
++      .then((data) => {
++        setLines(data.lines);
++        setValues(Object.fromEntries(data.lines.map((l) => [l.productId, l.counted === null ? "" : String(l.counted)])));
++      })
++      .catch((e) => setError(e instanceof Error ? e.message : "Chargement impossible."));
++  }, [count.id]);
++
++  const visible = useMemo(() => {
++    const q = query.trim().toLowerCase();
++    return (lines ?? []).filter((l) => !q || l.name.toLowerCase().includes(q) || l.sku.toLowerCase().includes(q));
++  }, [lines, query]);
++
++  const summary = useMemo(() => {
++    let counted = 0;
++    let variances = 0;
++    for (const l of lines ?? []) {
++      const raw = values[l.productId] ?? "";
++      if (raw === "") continue;
++      counted += 1;
++      if (Number(raw) !== l.expected) variances += 1;
++    }
++    return { counted, variances };
++  }, [lines, values]);
++
++  async function save() {
++    const payload = (lines ?? []).map((l) => {
++      const raw = values[l.productId] ?? "";
++      return { productId: l.productId, counted: raw === "" ? null : Number(raw) };
++    });
++    await api(`/api/inventory-counts/${count.id}`, { method: "PATCH", body: JSON.stringify({ lines: payload }) });
++  }
++
++  async function run(task: () => Promise<string>) {
++    setBusy(true);
++    setError("");
++    try {
++      onChanged(await task());
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Action impossible.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  async function saveOnly() {
++    setBusy(true);
++    setError("");
++    try {
++      await save();
++      onChanged("Comptage enregistré.");
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Enregistrement impossible.");
++    } finally {
++      setBusy(false);
++    }
++  }
++
++  return (
++    <Modal title={`Inventaire ${count.number}`} onClose={onClose}>
++      {error && <Alert>{error}</Alert>}
++      <p className="hint" style={{ marginBottom: 10 }}>
++        {count.warehouse} · <span className={`badge ${STATUS[count.status].badge}`}>{STATUS[count.status].label}</span>
++        {" "}· {summary.counted}/{lines?.length ?? count.total} comptés · {summary.variances} écart{summary.variances > 1 ? "s" : ""}
++      </p>
++      <div className="toolbar"><div className="search"><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Rechercher un produit…" /></div></div>
++      {!lines && !error ? <Loading /> : visible.length === 0 ? <Empty>Aucun produit.</Empty> : (
++        <div className="table-card"><div className="table-wrap">
++          <table className="table">
++            <thead><tr><th>Produit</th><th className="num">Attendu</th><th className="num">Compté</th><th className="num">Écart</th></tr></thead>
++            <tbody>
++              {visible.map((l) => {
++                const raw = values[l.productId] ?? "";
++                const diff = raw === "" ? null : Number(raw) - l.expected;
++                return (
++                  <tr key={l.productId}>
++                    <td data-label="Produit"><strong>{l.name}</strong> <small>{l.sku}</small></td>
++                    <td data-label="Attendu" className="num">{l.expected}</td>
++                    <td data-label="Compté" className="num">
++                      {editable ? (
++                        <input type="number" min={0} step={1} inputMode="numeric" value={raw} style={{ maxWidth: 110 }} aria-label={`Quantité comptée : ${l.name}`}
++                          onChange={(e) => setValues((c) => ({ ...c, [l.productId]: e.target.value }))} />
++                      ) : (raw === "" ? "—" : raw)}
++                    </td>
++                    <td data-label="Écart" className="num">
++                      {diff === null ? "—" : diff === 0 ? "0" : <span className={`badge ${diff > 0 ? "badge-ok" : "badge-danger"}`}>{diff > 0 ? `+${diff}` : diff}</span>}
++                    </td>
++                  </tr>
++                );
++              })}
++            </tbody>
++          </table>
++        </div></div>
++      )}
++      {count.status === "submitted" && <p className="hint" style={{ marginTop: 10 }}>Les produits non comptés ne sont pas modifiés. L’approbation applique les écarts au stock de l’entrepôt.</p>}
++      <div className="form-actions">
++        {(count.status === "open" || count.status === "submitted") && can(role, "inventory.count") && (
++          <button type="button" className="btn btn-danger" disabled={busy} onClick={() => window.confirm("Annuler cet inventaire ? Le stock ne sera pas modifié.") && run(async () => { await api(`/api/inventory-counts/${count.id}/cancel`, { method: "POST" }); return "Inventaire annulé."; })}>Annuler l’inventaire</button>
++        )}
++        {editable && <button type="button" className="btn" disabled={busy || !lines} onClick={saveOnly}>Enregistrer</button>}
++        {editable && (
++          <button type="button" className="btn btn-primary" disabled={busy || !lines || summary.counted === 0}
++            onClick={() => window.confirm("Soumettre le comptage pour approbation ? Il ne sera plus modifiable.") && run(async () => { await save(); await api(`/api/inventory-counts/${count.id}/submit`, { method: "POST" }); return "Comptage soumis pour approbation."; })}>Soumettre</button>
++        )}
++        {count.status === "submitted" && can(role, "inventory.approve") && (
++          <button type="button" className="btn btn-primary" disabled={busy}
++            onClick={() => window.confirm(`Approuver ? ${summary.variances} écart(s) seront appliqués au stock.`) && run(async () => { const r = await api<{ adjusted: number }>(`/api/inventory-counts/${count.id}/approve`, { method: "POST" }); return `Inventaire approuvé : ${r.adjusted} ajustement(s) appliqué(s).`; })}>Approuver et ajuster le stock</button>
++        )}
++        <button type="button" className="btn" onClick={onClose}>Fermer</button>
++      </div>
++    </Modal>
++  );
++}
++
++export default function InventoryView({ role }: { role: Role }) {
++  const { data, error, loading, reload } = useApi<{ counts: Count[] }>("/api/inventory-counts");
++  const [creating, setCreating] = useState(false);
++  const [opened, setOpened] = useState<Count | null>(null);
++  const [notice, setNotice] = useState("");
++  const list = data?.counts ?? [];
++
++  return (
++    <>
++      <PageHeader title="Inventaires" subtitle="Comptez le stock réel, contrôlez les écarts puis faites approuver l’ajustement.">
++        {can(role, "inventory.count") && <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={18} /> Nouvel inventaire</button>}
++      </PageHeader>
++      {notice && <Alert kind="success">{notice}</Alert>}
++      {error && <Alert>{error}</Alert>}
++
++      {loading && !data ? <Loading /> : list.length === 0 ? (
++        <Empty>Aucun inventaire pour l’instant.</Empty>
++      ) : (
++        <div className="table-card"><div className="table-wrap">
++          <table className="table">
++            <thead><tr><th>Numéro</th><th>Entrepôt</th><th>Statut</th><th className="num">Comptés</th><th className="num">Écarts</th><th>Date</th><th /></tr></thead>
++            <tbody>
++              {list.map((c) => (
++                <tr key={c.id}>
++                  <td data-label="Numéro"><strong>{c.number}</strong></td>
++                  <td data-label="Entrepôt">{c.warehouse}</td>
++                  <td data-label="Statut"><span className={`badge ${STATUS[c.status].badge}`}>{STATUS[c.status].label}</span></td>
++                  <td data-label="Comptés" className="num">{c.counted}/{c.total}</td>
++                  <td data-label="Écarts" className="num">{c.variances}</td>
++                  <td data-label="Date">{dateTime(c.createdAt)}</td>
++                  <td className="actions"><button type="button" className="btn btn-sm" onClick={() => setOpened(c)}>Ouvrir</button></td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div></div>
++      )}
++
++      {creating && (
++        <NewCount
++          onClose={() => setCreating(false)}
++          onCreated={async (_id, number) => {
++            setCreating(false);
++            setNotice(`Inventaire ${number} ouvert.`);
++            await reload();
++          }}
++        />
++      )}
++      {opened && <CountModal count={opened} role={role} onClose={() => setOpened(null)} onChanged={(message) => { setOpened(null); setNotice(message); void reload(); }} />}
++    </>
++  );
++}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/transfers-view.tsx Gestion_de_Stock-main/components/transfers-view.tsx
 --- orig/Gestion_de_Stock-main/components/transfers-view.tsx	1970-01-01 00:00:00.000000000 +0000
 +++ Gestion_de_Stock-main/components/transfers-view.tsx	2026-10-22 11:32:39.460835366 +0000
@@ -2221,10 +2715,87 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/
 +  UPDATE stock_transfers SET status = 'cancelled' WHERE id = p_transfer;
 +END
 +$$;
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0012_inventory_counts.sql Gestion_de_Stock-main/db/0012_inventory_counts.sql
+--- orig/Gestion_de_Stock-main/db/0012_inventory_counts.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0012_inventory_counts.sql	2026-10-23 07:54:48.490293615 +0000
+@@ -0,0 +1,73 @@
++-- 0012 : inventaires physiques.
++-- 1) Une seule session d'inventaire active (ouverte ou soumise) par entrepôt.
++-- 2) Le déclencheur de soldes peut être suspendu (app.skip_stock_sync) par les fonctions
++--    qui règlent elles-mêmes les soldes par entrepôt.
++-- 3) approve_inventory_count : applique les écarts (compté - attendu) à l'entrepôt de l'inventaire,
++--    met à jour le total du produit et journalise un mouvement « adjustment » par écart.
++
++CREATE UNIQUE INDEX IF NOT EXISTS inventory_counts_one_active_idx
++  ON inventory_counts (company_id, warehouse_id) WHERE status IN ('open','submitted');
++
++CREATE OR REPLACE FUNCTION sync_stock_balance() RETURNS trigger LANGUAGE plpgsql AS $$
++DECLARE
++  delta numeric;
++  wh uuid;
++BEGIN
++  -- Les fonctions qui règlent elles-mêmes les soldes par entrepôt (inventaire) désactivent la synchronisation.
++  IF current_setting('app.skip_stock_sync', true) = '1' THEN RETURN NULL; END IF;
++  IF TG_OP = 'INSERT' THEN
++    delta := NEW.quantity;
++  ELSE
++    delta := NEW.quantity - OLD.quantity;
++  END IF;
++  IF delta = 0 THEN RETURN NULL; END IF;
++  SELECT id INTO wh FROM warehouses WHERE company_id = NEW.company_id AND is_default;
++  IF wh IS NULL THEN RETURN NULL; END IF;
++  -- UPDATE d'abord : un INSERT ... ON CONFLICT contrôle la ligne proposée (variation négative) avant le conflit.
++  UPDATE stock_balances SET quantity_on_hand = quantity_on_hand + delta, updated_at = now()
++   WHERE company_id = NEW.company_id AND warehouse_id = wh AND product_id = NEW.id;
++  IF NOT FOUND THEN
++    INSERT INTO stock_balances (company_id, warehouse_id, product_id, quantity_on_hand)
++    VALUES (NEW.company_id, wh, NEW.id, delta);
++  END IF;
++  RETURN NULL;
++END
++$$;
++
++CREATE OR REPLACE FUNCTION approve_inventory_count(p_company uuid, p_count uuid, p_user bigint) RETURNS int
++LANGUAGE plpgsql AS $$
++DECLARE
++  c inventory_counts%ROWTYPE;
++  l RECORD;
++  v numeric;
++  adjusted int := 0;
++BEGIN
++  SELECT * INTO c FROM inventory_counts WHERE id = p_count AND company_id = p_company FOR UPDATE;
++  IF NOT FOUND THEN RAISE EXCEPTION 'INVENTORY_NOT_FOUND'; END IF;
++  IF c.status <> 'submitted' THEN RAISE EXCEPTION 'INVENTORY_BAD_STATUS'; END IF;
++  -- Soldes par entrepôt réglés ici ; products.quantity (total) suit la même variation.
++  PERFORM set_config('app.skip_stock_sync', '1', true);
++  FOR l IN SELECT product_id, expected_quantity, counted_quantity FROM inventory_count_lines
++           WHERE count_id = p_count AND company_id = p_company
++             AND counted_quantity IS NOT NULL AND counted_quantity <> expected_quantity
++           ORDER BY product_id LOOP
++    v := l.counted_quantity - l.expected_quantity;
++    UPDATE stock_balances SET quantity_on_hand = quantity_on_hand + v, updated_at = now()
++     WHERE company_id = p_company AND warehouse_id = c.warehouse_id AND product_id = l.product_id;
++    IF NOT FOUND THEN
++      IF v < 0 THEN RAISE EXCEPTION 'INVENTORY_STOCK_CHANGED:%', l.product_id; END IF;
++      INSERT INTO stock_balances (company_id, warehouse_id, product_id, quantity_on_hand)
++      VALUES (p_company, c.warehouse_id, l.product_id, v);
++    END IF;
++    UPDATE products SET quantity = quantity + v WHERE id = l.product_id AND company_id = p_company;
++    INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id, warehouse_id, source_type, source_id)
++    VALUES (p_company, l.product_id, 'adjustment', ABS(v)::int,
++            'Inventaire ' || c.count_number || ' : ' || l.expected_quantity::int || ' → ' || l.counted_quantity::int,
++            p_user, c.warehouse_id, 'inventory_count', p_count::text);
++    adjusted := adjusted + 1;
++  END LOOP;
++  PERFORM set_config('app.skip_stock_sync', '', true);
++  UPDATE inventory_counts SET status = 'approved', approved_by = p_user, approved_at = now() WHERE id = p_count;
++  RETURN adjusted;
++END
++$$;
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/api.ts Gestion_de_Stock-main/lib/api.ts
 --- orig/Gestion_de_Stock-main/lib/api.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/api.ts	2026-10-22 11:31:30.697189867 +0000
-@@ -42,3 +42,27 @@
++++ Gestion_de_Stock-main/lib/api.ts	2026-10-23 07:55:27.619148243 +0000
+@@ -42,3 +42,38 @@
  export function isForeignKey(error: unknown) {
    return /foreign key/i.test(errorText(error));
  }
@@ -2250,6 +2821,17 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +  if (/TRANSFER_BAD_STATUS/.test(text)) return fail("Ce transfert n’est pas dans un état qui permet cette action.", 409);
 +  if (/TRANSFER_EMPTY/.test(text)) return fail("Ce transfert ne contient aucune ligne.", 400);
 +  if (/INSUFFICIENT_STOCK/.test(text)) return fail("Stock disponible insuffisant dans l’entrepôt d’origine.", 409);
++  return null;
++}
++
++/** Traduit les erreurs levées par approve_inventory_count. */
++export function inventoryFailure(error: unknown) {
++  const text = errorText(error);
++  if (/INVENTORY_NOT_FOUND/.test(text)) return fail("Inventaire introuvable.", 404);
++  if (/INVENTORY_BAD_STATUS/.test(text)) return fail("Cet inventaire n’est pas dans un état qui permet cette action.", 409);
++  if (/INVENTORY_STOCK_CHANGED/.test(text) || isCheckViolation(error)) {
++    return fail("Le stock a changé depuis le comptage : un écart négatif ne peut plus être appliqué. Annulez cet inventaire et recommencez.", 409);
++  }
 +  return null;
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/auth.ts Gestion_de_Stock-main/lib/auth.ts
@@ -2318,7 +2900,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
  };
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/roles.ts Gestion_de_Stock-main/lib/roles.ts
 --- orig/Gestion_de_Stock-main/lib/roles.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/roles.ts	2026-10-22 11:31:30.697189867 +0000
++++ Gestion_de_Stock-main/lib/roles.ts	2026-10-23 07:55:27.619148243 +0000
 @@ -9,6 +9,15 @@
    seller: "Vendeur"
  };
@@ -2335,18 +2917,19 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
  export function isRole(value: unknown): value is Role {
    return typeof value === "string" && (ROLES as readonly string[]).includes(value);
  }
-@@ -21,7 +30,9 @@
+@@ -21,7 +30,10 @@
    | "sales.view" | "sales.write" | "sales.cancel"
    | "reports.view" | "users.manage"
    | "purchases.view" | "purchases.write" | "purchases.receive"
 -  | "audit.view" | "settings.manage";
 +  | "audit.view" | "settings.manage"
 +  | "warehouses.view" | "warehouses.write"
-+  | "transfers.view" | "transfers.write" | "transfers.receive";
++  | "transfers.view" | "transfers.write" | "transfers.receive"
++  | "inventory.view" | "inventory.count" | "inventory.approve";
  
  const PERMISSIONS: Record<Permission, readonly Role[]> = {
    "products.write": ["super_admin", "admin", "manager", "storekeeper"],
-@@ -41,7 +52,12 @@
+@@ -41,7 +53,15 @@
    "purchases.write": ["super_admin", "admin", "manager"],
    "purchases.receive": ["super_admin", "admin", "manager", "storekeeper"],
    "audit.view": ["super_admin", "admin"],
@@ -2356,7 +2939,10 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +  "warehouses.write": ["super_admin", "admin", "manager"],
 +  "transfers.view": ["super_admin", "admin", "manager", "storekeeper"],
 +  "transfers.write": ["super_admin", "admin", "manager", "storekeeper"],
-+  "transfers.receive": ["super_admin", "admin", "manager", "storekeeper"]
++  "transfers.receive": ["super_admin", "admin", "manager", "storekeeper"],
++  "inventory.view": ["super_admin", "admin", "manager", "storekeeper"],
++  "inventory.count": ["super_admin", "admin", "manager", "storekeeper"],
++  "inventory.approve": ["super_admin", "admin", "manager"]
  };
  
  export function can(role: Role, permission: Permission) {
@@ -2371,8 +2957,8 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
  type Sql = NeonQueryFunction<false, false>;
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/validation.ts Gestion_de_Stock-main/lib/validation.ts
 --- orig/Gestion_de_Stock-main/lib/validation.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/validation.ts	2026-10-22 11:31:30.697189867 +0000
-@@ -129,3 +129,44 @@
++++ Gestion_de_Stock-main/lib/validation.ts	2026-10-23 07:55:27.619148243 +0000
+@@ -129,3 +129,58 @@
    currentPassword: z.string().min(1, "Saisissez votre mot de passe actuel").max(128),
    newPassword: passwordSchema
  });
@@ -2417,6 +3003,20 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +    message: "Un produit ne peut apparaître qu’une seule fois dans un transfert",
 +    path: ["lines"]
 +  });
++
++export const inventoryCreateSchema = z.object({ warehouseId: z.string().uuid("Entrepôt invalide") });
++
++export const inventorySaveSchema = z.object({
++  lines: z
++    .array(
++      z.object({
++        productId: z.coerce.number().int().positive(),
++        counted: z.union([z.coerce.number().int("Quantité invalide").min(0, "La quantité ne peut pas être négative").max(100000000), z.null()])
++      })
++    )
++    .min(1)
++    .max(5000)
++});
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/scripts/check-isolation.mjs Gestion_de_Stock-main/scripts/check-isolation.mjs
 --- orig/Gestion_de_Stock-main/scripts/check-isolation.mjs	1970-01-01 00:00:00.000000000 +0000
 +++ Gestion_de_Stock-main/scripts/check-isolation.mjs	2026-10-21 08:02:21.415400613 +0000

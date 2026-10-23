@@ -119,3 +119,13 @@ Principes :
 - Une vente ou une sortie supérieure au stock de l'entrepôt principal est refusée (409) même si le total est suffisant.
 - Les numéros de transfert (`TR-AAAA-00001`) sont générés côté serveur, sans doublon, via `document_sequences`.
 - Limite actuelle : la réception est complète (pas de réception partielle) ; les ventes ne choisissent pas encore l'entrepôt.
+
+## Phase 03 — Inventaires physiques
+
+Migration : `db/0012_inventory_counts.sql` (à appliquer **avant** de déployer le code).
+
+- Un inventaire fige le stock attendu de chaque produit pour un entrepôt, puis les quantités comptées sont saisies (statuts : en cours → à approuver → approuvé, ou annulé).
+- Une seule session active par entrepôt.
+- L'approbation (`approve_inventory_count`) applique les écarts *compté − attendu* au solde de l'entrepôt et au total du produit, et journalise un mouvement « Inventaire » par écart. Tout réussit ou rien n'est modifié.
+- Les produits non comptés ne sont pas modifiés. Si le stock a baissé entre le comptage et l'approbation au point de rendre un écart négatif impossible, l'approbation est refusée et l'inventaire doit être recommencé.
+- Droits : comptage pour administrateurs, directeurs et magasiniers ; approbation pour administrateurs et directeurs.

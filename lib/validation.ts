@@ -170,3 +170,17 @@ export const transferSchema = z
     message: "Un produit ne peut apparaître qu’une seule fois dans un transfert",
     path: ["lines"]
   });
+
+export const inventoryCreateSchema = z.object({ warehouseId: z.string().uuid("Entrepôt invalide") });
+
+export const inventorySaveSchema = z.object({
+  lines: z
+    .array(
+      z.object({
+        productId: z.coerce.number().int().positive(),
+        counted: z.union([z.coerce.number().int("Quantité invalide").min(0, "La quantité ne peut pas être négative").max(100000000), z.null()])
+      })
+    )
+    .min(1)
+    .max(5000)
+});

@@ -32,7 +32,8 @@ export type Permission =
   | "purchases.view" | "purchases.write" | "purchases.receive"
   | "audit.view" | "settings.manage"
   | "warehouses.view" | "warehouses.write"
-  | "transfers.view" | "transfers.write" | "transfers.receive";
+  | "transfers.view" | "transfers.write" | "transfers.receive"
+  | "inventory.view" | "inventory.count" | "inventory.approve";
 
 const PERMISSIONS: Record<Permission, readonly Role[]> = {
   "products.write": ["super_admin", "admin", "manager", "storekeeper"],
@@ -57,7 +58,10 @@ const PERMISSIONS: Record<Permission, readonly Role[]> = {
   "warehouses.write": ["super_admin", "admin", "manager"],
   "transfers.view": ["super_admin", "admin", "manager", "storekeeper"],
   "transfers.write": ["super_admin", "admin", "manager", "storekeeper"],
-  "transfers.receive": ["super_admin", "admin", "manager", "storekeeper"]
+  "transfers.receive": ["super_admin", "admin", "manager", "storekeeper"],
+  "inventory.view": ["super_admin", "admin", "manager", "storekeeper"],
+  "inventory.count": ["super_admin", "admin", "manager", "storekeeper"],
+  "inventory.approve": ["super_admin", "admin", "manager"]
 };
 
 export function can(role: Role, permission: Permission) {
