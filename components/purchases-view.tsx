@@ -7,14 +7,22 @@ import { dateTime, money } from "@/lib/format";
 import { can, type Role } from "@/lib/roles";
 import { Alert, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui";
 
-type Purchase = { id: string; status: string; total: string; note: string | null; createdAt: string; receivedAt: string | null; supplierName: string | null; userName: string | null; itemCount: number };
+type Purchase = { id: string; orderNumber: string | null; status: string; total: string; note: string | null; createdAt: string; receivedAt: string | null; supplierName: string | null; userName: string | null; itemCount: number };
 type Product = { id: string; name: string; sku: string; quantity: number; unitPrice: string };
 type Supplier = { id: string; name: string };
 type Line = { key: number; productId: string; quantity: string; unitCost: string };
-type Detail = { purchase: Purchase; items: { name: string; sku: string; quantity: number; unitCost: string }[] };
+type DetailItem = { id: string; name: string; sku: string; quantity: number; unitCost: string; received: number; rejected: number };
+type Receipt = { number: string; receivedAt: string; note: string | null; userName: string | null };
+type Detail = { purchase: Purchase; items: DetailItem[]; receipts: Receipt[] };
+type ReceiveValue = { received: string; rejected: string };
+
+const ref = (p: { id: string; orderNumber: string | null }) => p.orderNumber ?? `#${p.id}`;
 
 const STATUS: Record<string, { label: string; cls: string }> = {
+  draft: { label: "Brouillon", cls: "badge-muted" },
+  submitted: { label: "À approuver", cls: "badge-warn" },
   ordered: { label: "Commandée", cls: "badge-warn" },
+  partially_received: { label: "Reçue en partie", cls: "badge-warn" },
   received: { label: "Reçue", cls: "badge-ok" },
   cancelled: { label: "Annulée", cls: "badge-danger" }
 };
@@ -31,8 +39,15 @@ export default function PurchasesView({ role }: { role: Role }) {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [detail, setDetail] = useState<Detail | null>(null);
+  const [requireApproval, setRequireApproval] = useState(false);
+  const [receiving, setReceiving] = useState<Detail | null>(null);
+  const [receiveValues, setReceiveValues] = useState<Record<string, ReceiveValue>>({});
+  const [receiveNote, setReceiveNote] = useState("");
+  const [receiveError, setReceiveError] = useState("");
+  const [receiveBusy, setReceiveBusy] = useState(false);
   const canWrite = can(role, "purchases.write");
   const canReceive = can(role, "purchases.receive");
+  const canApprove = can(role, "purchases.approve");
   const productList = products.data?.products ?? [];
 
   const total = useMemo(
@@ -44,6 +59,7 @@ export default function PurchasesView({ role }: { role: Role }) {
     setLines([{ key: Date.now(), productId: "", quantity: "1", unitCost: "0" }]);
     setSupplierId("");
     setNote("");
+    setRequireApproval(false);
     setFormError("");
     setOpen(true);
   }
@@ -61,16 +77,17 @@ export default function PurchasesView({ role }: { role: Role }) {
     setFormError("");
     setSaving(true);
     try {
-      const result = await api<{ purchase: { id: string } }>("/api/purchases", {
+      const result = await api<{ purchase: { id: string; number: string | null } }>("/api/purchases", {
         method: "POST",
         body: JSON.stringify({
           supplierId: supplierId || undefined,
           note,
+          requireApproval,
           items: lines.map((l) => ({ productId: l.productId, quantity: l.quantity, unitCost: l.unitCost }))
         })
       });
       setOpen(false);
-      setNotice(`Commande n° ${result.purchase.id} enregistrée.`);
+      setNotice(`Commande ${result.purchase.number ?? `n° ${result.purchase.id}`} ${requireApproval ? "enregistrée en brouillon." : "enregistrée."}`);
       await purchases.reload();
     } catch (e) {
       setFormError(e instanceof Error ? e.message : "Enregistrement impossible.");
@@ -87,17 +104,65 @@ export default function PurchasesView({ role }: { role: Role }) {
     }
   }
 
-  async function act(purchase: Purchase, action: "receive" | "cancel") {
-    const message = action === "receive"
-      ? `Confirmer la réception de la commande n° ${purchase.id} ? Le stock sera augmenté.`
-      : `Annuler la commande n° ${purchase.id} ?`;
-    if (!window.confirm(message)) return;
+  async function act(purchase: Purchase, action: "submit" | "approve" | "cancel") {
+    const label = ref(purchase);
+    const confirmText = {
+      submit: `Soumettre la commande ${label} pour approbation ?`,
+      approve: `Approuver la commande ${label} ? Elle pourra ensuite être réceptionnée.`,
+      cancel: `Annuler la commande ${label} ?`
+    }[action];
+    const done = {
+      submit: `Commande ${label} soumise pour approbation.`,
+      approve: `Commande ${label} approuvée.`,
+      cancel: `Commande ${label} annulée.`
+    }[action];
+    if (!window.confirm(confirmText)) return;
     try {
       await api(`/api/purchases/${purchase.id}/${action}`, { method: "POST" });
-      setNotice(action === "receive" ? `Commande n° ${purchase.id} reçue, stock mis à jour.` : `Commande n° ${purchase.id} annulée.`);
-      await Promise.all([purchases.reload(), products.reload()]);
+      setNotice(done);
+      await purchases.reload();
     } catch (e) {
       window.alert(e instanceof Error ? e.message : "Action impossible.");
+    }
+  }
+
+  async function startReceive(purchase: Purchase) {
+    try {
+      const data = await api<Detail>(`/api/purchases/${purchase.id}`);
+      const values: Record<string, ReceiveValue> = {};
+      for (const item of data.items) {
+        const remaining = item.quantity - item.received - item.rejected;
+        values[item.id] = { received: remaining > 0 ? String(remaining) : "0", rejected: "0" };
+      }
+      setReceiveValues(values);
+      setReceiveNote("");
+      setReceiveError("");
+      setReceiving(data);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : "Détail indisponible.");
+    }
+  }
+
+  async function submitReceive(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!receiving) return;
+    setReceiveError("");
+    setReceiveBusy(true);
+    try {
+      const lines = receiving.items
+        .map((item) => ({ itemId: item.id, received: Number(receiveValues[item.id]?.received) || 0, rejected: Number(receiveValues[item.id]?.rejected) || 0 }))
+        .filter((l) => l.received > 0 || l.rejected > 0);
+      const result = await api<{ number: string }>(`/api/purchases/${receiving.purchase.id}/receive`, {
+        method: "POST",
+        body: JSON.stringify({ lines, note: receiveNote })
+      });
+      setReceiving(null);
+      setNotice(`Réception ${result.number} enregistrée, stock mis à jour.`);
+      await Promise.all([purchases.reload(), products.reload()]);
+    } catch (e) {
+      setReceiveError(e instanceof Error ? e.message : "Réception impossible.");
+    } finally {
+      setReceiveBusy(false);
     }
   }
 
@@ -120,7 +185,7 @@ export default function PurchasesView({ role }: { role: Role }) {
             <tbody>
               {list.map((p) => (
                 <tr key={p.id}>
-                  <td data-label="N°"><strong>#{p.id}</strong></td>
+                  <td data-label="N°"><strong>{ref(p)}</strong></td>
                   <td data-label="Date">{dateTime(p.createdAt)}</td>
                   <td data-label="Fournisseur">{p.supplierName ?? "—"}</td>
                   <td data-label="Articles" className="num">{p.itemCount}</td>
@@ -128,8 +193,10 @@ export default function PurchasesView({ role }: { role: Role }) {
                   <td data-label="Statut"><span className={`badge ${STATUS[p.status]?.cls ?? "badge-muted"}`}>{STATUS[p.status]?.label ?? p.status}</span></td>
                   <td className="actions">
                     <button type="button" className="btn btn-sm" onClick={() => showDetail(p.id)}>Détail</button>
-                    {canReceive && p.status === "ordered" && <button type="button" className="btn btn-sm btn-primary" onClick={() => act(p, "receive")}>Réceptionner</button>}
-                    {canWrite && p.status === "ordered" && <button type="button" className="btn btn-sm btn-danger" onClick={() => act(p, "cancel")}>Annuler</button>}
+                    {canWrite && p.status === "draft" && <button type="button" className="btn btn-sm btn-primary" onClick={() => act(p, "submit")}>Soumettre</button>}
+                    {canApprove && p.status === "submitted" && <button type="button" className="btn btn-sm btn-primary" onClick={() => act(p, "approve")}>Approuver</button>}
+                    {canReceive && (p.status === "ordered" || p.status === "partially_received") && <button type="button" className="btn btn-sm btn-primary" onClick={() => startReceive(p)}>Réceptionner</button>}
+                    {canWrite && ["draft", "submitted", "ordered"].includes(p.status) && <button type="button" className="btn btn-sm btn-danger" onClick={() => act(p, "cancel")}>Annuler</button>}
                   </td>
                 </tr>
               ))}
@@ -151,6 +218,10 @@ export default function PurchasesView({ role }: { role: Role }) {
               </Field>
               <Field label="Note (facultatif)"><input value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} /></Field>
             </div>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+              <input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)} style={{ width: "auto" }} />
+              <span>Enregistrer en brouillon, à faire approuver avant de commander</span>
+            </label>
             <p className="hint" style={{ marginBottom: 8 }}>Articles : produit, quantité, coût unitaire d’achat (FCFA)</p>
             {lines.map((line) => (
               <div className="purchase-line" key={line.key}>
@@ -173,20 +244,72 @@ export default function PurchasesView({ role }: { role: Role }) {
         </Modal>
       )}
 
+      {receiving && (
+        <Modal title={`Réception : ${ref(receiving.purchase)}`} onClose={() => setReceiving(null)}>
+          <form onSubmit={submitReceive}>
+            {receiveError && <Alert>{receiveError}</Alert>}
+            <p className="hint" style={{ marginBottom: 10 }}>Indiquez ce qui est arrivé. Les quantités rejetées n’entrent pas en stock. Ce qui reste à recevoir pourra l’être plus tard.</p>
+            <div className="table-card"><div className="table-wrap">
+              <table className="table">
+                <thead><tr><th>Produit</th><th className="num">Reste</th><th className="num">Reçu</th><th className="num">Rejeté</th></tr></thead>
+                <tbody>
+                  {receiving.items.map((item) => {
+                    const remaining = item.quantity - item.received - item.rejected;
+                    const value = receiveValues[item.id] ?? { received: "0", rejected: "0" };
+                    return (
+                      <tr key={item.id}>
+                        <td data-label="Produit"><strong>{item.name}</strong> <small>{item.sku}</small></td>
+                        <td data-label="Reste" className="num">{remaining}</td>
+                        <td data-label="Reçu" className="num">
+                          <input type="number" min={0} max={remaining} step={1} inputMode="numeric" disabled={remaining <= 0} value={value.received} style={{ maxWidth: 100 }} aria-label={`Quantité reçue : ${item.name}`}
+                            onChange={(e) => setReceiveValues((c) => ({ ...c, [item.id]: { ...value, received: e.target.value } }))} />
+                        </td>
+                        <td data-label="Rejeté" className="num">
+                          <input type="number" min={0} max={remaining} step={1} inputMode="numeric" disabled={remaining <= 0} value={value.rejected} style={{ maxWidth: 100 }} aria-label={`Quantité rejetée : ${item.name}`}
+                            onChange={(e) => setReceiveValues((c) => ({ ...c, [item.id]: { ...value, rejected: e.target.value } }))} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div></div>
+            <div className="form-grid" style={{ marginTop: 12 }}>
+              <Field label="Note (facultatif)" span><input value={receiveNote} maxLength={300} onChange={(e) => setReceiveNote(e.target.value)} /></Field>
+            </div>
+            <div className="form-actions">
+              <button type="button" className="btn" onClick={() => setReceiving(null)}>Annuler</button>
+              <button type="submit" className="btn btn-primary" disabled={receiveBusy}>{receiveBusy ? "Enregistrement…" : "Enregistrer la réception"}</button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {detail && (
-        <Modal title={`Commande n° ${detail.purchase.id}`} onClose={() => setDetail(null)}>
+        <Modal title={`Commande ${ref(detail.purchase)}`} onClose={() => setDetail(null)}>
           <p className="muted" style={{ marginBottom: 12 }}>
             {dateTime(detail.purchase.createdAt)} · {detail.purchase.supplierName ?? "Sans fournisseur"} · {STATUS[detail.purchase.status]?.label ?? detail.purchase.status}
             {detail.purchase.receivedAt ? ` le ${dateTime(detail.purchase.receivedAt)}` : ""}
           </p>
           {detail.items.map((item, index) => (
             <div className="receipt-line" key={index}>
-              <span>{item.quantity} × {item.name}</span>
+              <span>{item.quantity} × {item.name}{(item.received > 0 || item.rejected > 0) && <small> · reçu {item.received}{item.rejected > 0 ? `, rejeté ${item.rejected}` : ""}</small>}</span>
               <span>{money(item.quantity * Number(item.unitCost))}</span>
             </div>
           ))}
           <div className="receipt-total"><span>Total</span><span>{money(detail.purchase.total)}</span></div>
           {detail.purchase.note && <p className="muted" style={{ marginTop: 10 }}>Note : {detail.purchase.note}</p>}
+          {detail.receipts.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <p className="hint" style={{ marginBottom: 6 }}>Bons de réception</p>
+              {detail.receipts.map((r) => (
+                <div className="receipt-line" key={r.number}>
+                  <span><strong>{r.number}</strong>{r.note ? ` · ${r.note}` : ""}</span>
+                  <span>{dateTime(r.receivedAt)}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="form-actions"><button type="button" className="btn" onClick={() => setDetail(null)}>Fermer</button></div>
         </Modal>
       )}
