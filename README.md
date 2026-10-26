@@ -138,3 +138,14 @@ Aucune migration : la table `product_barcodes` (migration 0010) est utilisée te
 - Ajout et retrait depuis la fenêtre « Modifier le produit » : un lecteur saisit le code puis envoie Entrée.
 - Dans une nouvelle vente, le champ de scan retrouve le produit par code-barres, sinon par référence exacte. Un second scan du même produit augmente la quantité, dans la limite du stock. Les produits en rupture sont refusés.
 - Un lecteur de codes-barres USB ou Bluetooth se comporte comme un clavier : aucun réglage particulier n'est nécessaire.
+
+## Phase 04 — Achats : approbation et réceptions partielles
+
+Migration : `db/0013_purchase_workflow_receipts.sql` (à appliquer **avant** de déployer le code). Les commandes existantes ne changent pas.
+
+- Statuts : `draft` (brouillon) → `submitted` (à approuver) → `ordered` (commandée, prête à recevoir) → `partially_received` → `received`, ou `cancelled`.
+- L'approbation est **optionnelle** : par défaut une commande est directement « commandée » ; la case « Enregistrer en brouillon » ajoute l'étape soumission puis approbation (permission `purchases.approve`).
+- Numéros `CA-AAAA-00001` (commandes) et `REC-AAAA-00001` (bons de réception), générés côté serveur sans doublon.
+- Réception (`receive_purchase`) : quantités reçues et rejetées par ligne, plusieurs réceptions possibles ; une quantité ne peut pas dépasser le reste à recevoir. Le stock n'augmente que des quantités reçues. Tout est enregistré dans une seule transaction.
+- Une commande ne peut plus être annulée dès qu'une réception a eu lieu.
+- Pas encore : factures fournisseur, retours fournisseur et tolérance de dépassement de commande.
