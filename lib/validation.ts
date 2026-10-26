@@ -106,6 +106,7 @@ export const recoverSchema = z.object({
 export const purchaseSchema = z.object({
   supplierId: optionalId,
   note: optionalText(300),
+  requireApproval: z.boolean().optional(),
   items: z
     .array(
       z.object({
@@ -192,4 +193,20 @@ export const barcodeSchema = z.object({
     .min(3, "Le code-barres doit contenir au moins 3 caractères")
     .max(64, "Le code-barres est trop long")
     .regex(/^[A-Za-z0-9._\/-]+$/, "Le code-barres ne peut contenir que des lettres, chiffres et . _ / -")
+});
+
+/** Réception d'une commande : sans lignes, tout le reste à recevoir est réceptionné. */
+export const receiveSchema = z.object({
+  note: optionalText(300),
+  lines: z
+    .array(
+      z.object({
+        itemId: z.coerce.number().int().positive(),
+        received: z.coerce.number().int("Quantité invalide").min(0, "La quantité ne peut pas être négative").max(1000000),
+        rejected: z.coerce.number().int("Quantité invalide").min(0, "La quantité ne peut pas être négative").max(1000000)
+      })
+    )
+    .min(1)
+    .max(100)
+    .optional()
 });

@@ -29,7 +29,7 @@ export type Permission =
   | "customers.view" | "customers.write"
   | "sales.view" | "sales.write" | "sales.cancel"
   | "reports.view" | "users.manage"
-  | "purchases.view" | "purchases.write" | "purchases.receive"
+  | "purchases.view" | "purchases.write" | "purchases.receive" | "purchases.approve"
   | "audit.view" | "settings.manage"
   | "warehouses.view" | "warehouses.write"
   | "transfers.view" | "transfers.write" | "transfers.receive"
@@ -52,6 +52,7 @@ const PERMISSIONS: Record<Permission, readonly Role[]> = {
   "purchases.view": ["super_admin", "admin", "manager", "storekeeper"],
   "purchases.write": ["super_admin", "admin", "manager"],
   "purchases.receive": ["super_admin", "admin", "manager", "storekeeper"],
+  "purchases.approve": ["super_admin", "admin", "manager"],
   "audit.view": ["super_admin", "admin"],
   "settings.manage": ["super_admin", "admin"],
   "warehouses.view": ["super_admin", "admin", "manager", "storekeeper"],

@@ -77,3 +77,14 @@ export function inventoryFailure(error: unknown) {
   }
   return null;
 }
+
+/** Traduit les erreurs levées par receive_purchase. */
+export function purchaseFailure(error: unknown) {
+  const text = errorText(error);
+  if (/PURCHASE_NOT_FOUND/.test(text)) return fail("Commande introuvable.", 404);
+  if (/PURCHASE_BAD_STATUS/.test(text)) return fail("Cette commande n’est pas dans un état qui permet la réception.", 409);
+  if (/RECEIPT_EMPTY/.test(text)) return fail("Saisissez au moins une quantité reçue ou rejetée.", 400);
+  if (/RECEIPT_EXCEEDS/.test(text)) return fail("Une quantité dépasse ce qui reste à recevoir sur cette commande.", 409);
+  if (/RECEIPT_INVALID/.test(text)) return fail("Réception invalide.", 400);
+  return null;
+}
