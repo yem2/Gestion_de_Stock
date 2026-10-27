@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes, scrypt as scryptCallback, timingSa
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
-import { ROLES, ROLE_LABELS, isRole, type Role } from "@/lib/roles";
+import { DB_PERMISSIONS, ROLES, ROLE_LABELS, can, isRole, type Permission, type PermissionGuard, type Role } from "@/lib/roles";
 
 export { ROLES, ROLE_LABELS, isRole };
 export type { Role };
@@ -25,6 +25,8 @@ export type SessionUser = {
   role: Role;
   /** Entreprise active de la session (appartenance active). Toutes les requêtes métier doivent la filtrer. */
   companyId: string;
+  /** Codes de permission issus des rôles RBAC de l'utilisateur (base de données), relus à chaque requête. */
+  permissions: string[];
 };
 
 
@@ -118,7 +120,15 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     const sql = getSql();
     // Une seule requête : utilisateur + entreprise active (appartenance active, entreprise active).
     const rows = await sql`
-      SELECT u.id, u.email, u.name, u.role, u.active, u.token_version AS "tokenVersion", m.company_id AS "companyId"
+      SELECT u.id, u.email, u.name, u.role, u.active, u.token_version AS "tokenVersion", m.company_id AS "companyId",
+             COALESCE((
+               SELECT array_agg(DISTINCT p.code)
+               FROM membership_roles mr
+               JOIN roles r ON r.id = mr.role_id
+               JOIN role_permissions rp ON rp.role_id = r.id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE mr.membership_id = m.id
+             ), ARRAY[]::text[]) AS permissions
       FROM users u
       JOIN company_memberships m ON m.user_id = u.id AND m.status = 'active'
       JOIN companies c ON c.id = m.company_id AND c.status = 'active'
@@ -130,7 +140,8 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     if (!row || !row.active || row.tokenVersion !== parsed.tokenVersion || !isRole(row.role)) return null;
     return {
       id: Number(row.id), email: String(row.email), name: String(row.name), role: row.role,
-      companyId: String(row.companyId)
+      companyId: String(row.companyId),
+      permissions: Array.isArray(row.permissions) ? row.permissions.map(String) : []
     };
   } catch {
     return null;
@@ -148,11 +159,27 @@ function sameOrigin(request: Request) {
 }
 
 /**
+ * Les permissions viennent de la base (rôles RBAC de l'utilisateur). Si aucun rôle RBAC n'est affecté
+ * à l'utilisateur, on retombe sur son rôle historique (users.role) pour ne jamais verrouiller un compte existant.
+ */
+function isAllowed(user: SessionUser, allowed: PermissionGuard) {
+  return allowed.permission ? userCan(user, allowed.permission) : allowed.includes(user.role);
+}
+
+/** Droit de l'utilisateur pour une permission de l'application (base de données, sinon rôle historique). */
+export function userCan(user: SessionUser, permission: Permission) {
+  if (user.permissions.length > 0) {
+    return DB_PERMISSIONS[permission].every((code) => user.permissions.includes(code));
+  }
+  return can(user.role, permission);
+}
+
+/**
  * Contrôle d'accès des routes API : session valide, rôle autorisé, origine identique pour les écritures.
  */
 export async function authorize(
   request: Request,
-  allowed?: readonly Role[]
+  allowed?: PermissionGuard
 ): Promise<{ user: SessionUser } | { error: NextResponse }> {
   if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(request)) {
     return { error: NextResponse.json({ error: "Origine non autorisée." }, { status: 403 }) };
@@ -161,7 +188,7 @@ export async function authorize(
   if (!user) {
     return { error: NextResponse.json({ error: "Authentification requise." }, { status: 401 }) };
   }
-  if (allowed && !allowed.includes(user.role)) {
+  if (allowed && !isAllowed(user, allowed)) {
     return { error: NextResponse.json({ error: "Accès refusé pour votre rôle." }, { status: 403 }) };
   }
   return { user };

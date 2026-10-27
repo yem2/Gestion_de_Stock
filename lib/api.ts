@@ -88,3 +88,15 @@ export function purchaseFailure(error: unknown) {
   if (/RECEIPT_INVALID/.test(text)) return fail("Réception invalide.", 400);
   return null;
 }
+
+/**
+ * Clé d'idempotence (en-tête Idempotency-Key) : permet de rejouer sans risque une requête
+ * après un double clic ou un délai dépassé. Absente = pas de protection (comportement historique).
+ */
+export function idempotencyKey(request: Request): { key: string | null } | { error: NextResponse } {
+  const raw = request.headers.get("idempotency-key");
+  if (raw === null || raw.trim() === "") return { key: null };
+  const key = raw.trim();
+  if (!/^[A-Za-z0-9_-]{8,200}$/.test(key)) return { error: fail("Clé d’idempotence invalide.") };
+  return { key };
+}

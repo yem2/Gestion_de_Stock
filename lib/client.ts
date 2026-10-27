@@ -6,7 +6,7 @@ export async function api<T = unknown>(url: string, init?: RequestInit): Promise
   const response = await fetch(url, {
     ...init,
     cache: "no-store",
-    headers: init?.body ? { "Content-Type": "application/json" } : undefined
+    headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...((init?.headers as Record<string, string> | undefined) ?? {}) }
   });
   if (response.status === 401) {
     window.location.href = "/login";

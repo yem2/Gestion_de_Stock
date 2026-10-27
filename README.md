@@ -149,3 +149,13 @@ Migration : `db/0013_purchase_workflow_receipts.sql` (à appliquer **avant** de 
 - Réception (`receive_purchase`) : quantités reçues et rejetées par ligne, plusieurs réceptions possibles ; une quantité ne peut pas dépasser le reste à recevoir. Le stock n'augmente que des quantités reçues. Tout est enregistré dans une seule transaction.
 - Une commande ne peut plus être annulée dès qu'une réception a eu lieu.
 - Pas encore : factures fournisseur, retours fournisseur et tolérance de dépassement de commande.
+
+## Phase 02 — Droits lus depuis la base, doublons, isolation
+
+Migration : `db/0014_rbac_alignment.sql` (à appliquer **avant** de déployer le code).
+
+- **Droits** : le serveur lit les permissions de l'utilisateur dans la base (`memberships → membership_roles → role_permissions → permissions`) à chaque requête. `DB_PERMISSIONS` (dans `lib/roles.ts`) relie chaque permission de l'application aux codes de la base. Si un utilisateur n'a aucun rôle RBAC, on retombe sur son rôle historique (`users.role`) pour ne jamais verrouiller un compte existant.
+- **Équivalence vérifiée** : sur 140 combinaisons (5 rôles historiques × 28 permissions), la base donne la même réponse que l'ancienne matrice, sauf deux écarts voulus par le cahier des charges (4.1) : le directeur peut consulter le journal d'audit, et le gestionnaire de stock peut archiver des produits.
+- **Limite** : les boutons des écrans suivent encore le rôle historique ; seuls le menu, l'accès aux pages et toutes les routes API suivent la base. Les rôles personnalisés demandent donc un écran de gestion des rôles (à venir).
+- **Doublons sur les ventes** : l'en-tête `Idempotency-Key` (une clé par ouverture de la fenêtre « Nouvelle vente ») est enregistré dans la même transaction que la vente. Un envoi répété renvoie la vente d'origine, sans second retrait de stock. Les clés ne sont pas encore purgées.
+- **Tests d'isolation** : `node scripts/check-isolation.mjs` (sur une branche de test) vérifie 20 contrôles : entrepôts, transferts, inventaires, codes-barres, clés d'idempotence, numérotation, et les fonctions SQL appelées par une autre entreprise.

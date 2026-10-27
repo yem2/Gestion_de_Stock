@@ -32,12 +32,12 @@ export type Permission =
   | "purchases.view" | "purchases.write" | "purchases.receive" | "purchases.approve"
   | "audit.view" | "settings.manage"
   | "warehouses.view" | "warehouses.write"
-  | "transfers.view" | "transfers.write" | "transfers.receive"
+  | "transfers.view" | "transfers.write" | "transfers.ship" | "transfers.receive"
   | "inventory.view" | "inventory.count" | "inventory.approve";
 
 const PERMISSIONS: Record<Permission, readonly Role[]> = {
   "products.write": ["super_admin", "admin", "manager", "storekeeper"],
-  "products.archive": ["super_admin", "admin", "manager"],
+  "products.archive": ["super_admin", "admin", "manager", "storekeeper"],
   "movements.view": ["super_admin", "admin", "manager", "storekeeper"],
   "movements.write": ["super_admin", "admin", "manager", "storekeeper"],
   "suppliers.view": ["super_admin", "admin", "manager", "storekeeper"],
@@ -53,12 +53,13 @@ const PERMISSIONS: Record<Permission, readonly Role[]> = {
   "purchases.write": ["super_admin", "admin", "manager"],
   "purchases.receive": ["super_admin", "admin", "manager", "storekeeper"],
   "purchases.approve": ["super_admin", "admin", "manager"],
-  "audit.view": ["super_admin", "admin"],
+  "audit.view": ["super_admin", "admin", "manager"],
   "settings.manage": ["super_admin", "admin"],
   "warehouses.view": ["super_admin", "admin", "manager", "storekeeper"],
   "warehouses.write": ["super_admin", "admin", "manager"],
   "transfers.view": ["super_admin", "admin", "manager", "storekeeper"],
   "transfers.write": ["super_admin", "admin", "manager", "storekeeper"],
+  "transfers.ship": ["super_admin", "admin", "manager", "storekeeper"],
   "transfers.receive": ["super_admin", "admin", "manager", "storekeeper"],
   "inventory.view": ["super_admin", "admin", "manager", "storekeeper"],
   "inventory.count": ["super_admin", "admin", "manager", "storekeeper"],
@@ -69,6 +70,44 @@ export function can(role: Role, permission: Permission) {
   return PERMISSIONS[permission].includes(role);
 }
 
-export function rolesFor(permission: Permission) {
-  return PERMISSIONS[permission];
+/**
+ * Codes de la table `permissions` (base de données) exigés pour chaque permission de l'application.
+ * Les droits réels d'un utilisateur viennent de ses rôles en base : memberships -> membership_roles -> role_permissions.
+ */
+export const DB_PERMISSIONS: Record<Permission, readonly string[]> = {
+  "products.write": ["products.create", "products.update"],
+  "products.archive": ["products.archive"],
+  "movements.view": ["inventory.movements.read"],
+  "movements.write": ["inventory.adjust"],
+  "suppliers.view": ["suppliers.read"],
+  "suppliers.write": ["suppliers.manage"],
+  "customers.view": ["customers.read"],
+  "customers.write": ["customers.manage"],
+  "sales.view": ["sales.read"],
+  "sales.write": ["sales.create"],
+  "sales.cancel": ["sales.cancel"],
+  "reports.view": ["reports.finance.read"],
+  "users.manage": ["users.manage"],
+  "purchases.view": ["purchases.read"],
+  "purchases.write": ["purchases.create"],
+  "purchases.receive": ["purchases.receive"],
+  "purchases.approve": ["purchases.approve"],
+  "audit.view": ["audit.read"],
+  "settings.manage": ["companies.manage"],
+  "warehouses.view": ["warehouses.read"],
+  "warehouses.write": ["warehouses.manage"],
+  "transfers.view": ["inventory.transfer.read"],
+  "transfers.write": ["inventory.transfer.create"],
+  "transfers.ship": ["inventory.transfer.ship"],
+  "transfers.receive": ["inventory.transfer.receive"],
+  "inventory.view": ["inventory.count.read"],
+  "inventory.count": ["inventory.count"],
+  "inventory.approve": ["inventory.count.approve"]
+};
+
+/** Liste de rôles historiques, étiquetée de la permission visée pour que le serveur vérifie la base. */
+export type PermissionGuard = readonly Role[] & { permission?: Permission };
+
+export function rolesFor(permission: Permission): PermissionGuard {
+  return Object.assign([...PERMISSIONS[permission]], { permission });
 }
