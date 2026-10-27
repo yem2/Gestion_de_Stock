@@ -7,9 +7,9 @@ import {
   Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
   Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Warehouse, X
 } from "lucide-react";
-import { can, type Permission, type Role } from "@/lib/roles";
+import { type Permission, type Role } from "@/lib/roles";
 
-type ShellUser = { name: string; role: Role; roleLabel: string };
+type ShellUser = { name: string; role: Role; roleLabel: string; allowed: Permission[] };
 
 const NAV: { href: string; label: string; icon: typeof Package; permission?: Permission }[] = [
   { href: "/", label: "Tableau de bord", icon: LayoutDashboard },
@@ -31,7 +31,7 @@ const NAV: { href: string; label: string; icon: typeof Package; permission?: Per
 export default function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
-  const items = NAV.filter((item) => !item.permission || can(user.role, item.permission));
+  const items = NAV.filter((item) => !item.permission || user.allowed.includes(item.permission));
   const current = items.find((item) => (item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)));
   const initials = user.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "U";
 

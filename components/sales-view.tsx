@@ -32,6 +32,7 @@ export default function SalesView({ role }: { role: Role }) {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [scan, setScan] = useState("");
+  const [idemKey, setIdemKey] = useState("");
   const [scanMessage, setScanMessage] = useState("");
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const canWrite = can(role, "sales.write");
@@ -53,6 +54,7 @@ export default function SalesView({ role }: { role: Role }) {
     setFormError("");
     setScan("");
     setScanMessage("");
+    setIdemKey(crypto.randomUUID());
     setOpen(true);
   }
 
@@ -96,6 +98,7 @@ export default function SalesView({ role }: { role: Role }) {
     try {
       const result = await api<{ sale: { id: string } }>("/api/sales", {
         method: "POST",
+        headers: idemKey ? { "Idempotency-Key": idemKey } : undefined,
         body: JSON.stringify({
           customerId: customerId || undefined,
           paymentMethod: payment,
