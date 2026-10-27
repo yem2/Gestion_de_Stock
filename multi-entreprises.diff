@@ -1,6 +1,6 @@
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/README.md Gestion_de_Stock-main/README.md
 --- orig/Gestion_de_Stock-main/README.md	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/README.md	2026-10-26 10:48:11.723486882 +0000
++++ Gestion_de_Stock-main/README.md	2026-10-26 19:38:13.172654783 +0000
 @@ -28,7 +28,7 @@
  2. Installe les dépendances : `npm install`
  3. Copie `.env.example` vers `.env.local`.
@@ -10,7 +10,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/REA
  6. Lance `npm run dev`, puis ouvre `http://localhost:3000`.
  
  Sans `DATABASE_URL` et la migration, l'interface s'affiche mais les données et l'ajout de produits ne fonctionnent pas.
-@@ -86,3 +86,66 @@
+@@ -86,3 +86,76 @@
  - **Achats** : commandes aux fournisseurs (articles, quantités, coût unitaire). « Réceptionner » passe la commande à *reçue*, augmente le stock et trace les entrées dans la même requête SQL ; une commande ne peut être reçue qu'une fois. Annulation possible tant qu'elle n'est pas reçue.
  - **Journal d'activité** (administrateurs) : les 300 dernières actions (connexions, produits, ventes, achats, exports, paramètres…) avec filtre.
  - **Paramètres** : changement de son propre mot de passe (ancien mot de passe exigé, autres sessions fermées) et informations de l'entreprise (nom, adresse, téléphone, message) reprises sur les reçus de vente.
@@ -77,6 +77,16 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/REA
 +- Réception (`receive_purchase`) : quantités reçues et rejetées par ligne, plusieurs réceptions possibles ; une quantité ne peut pas dépasser le reste à recevoir. Le stock n'augmente que des quantités reçues. Tout est enregistré dans une seule transaction.
 +- Une commande ne peut plus être annulée dès qu'une réception a eu lieu.
 +- Pas encore : factures fournisseur, retours fournisseur et tolérance de dépassement de commande.
++
++## Phase 02 — Droits lus depuis la base, doublons, isolation
++
++Migration : `db/0014_rbac_alignment.sql` (à appliquer **avant** de déployer le code).
++
++- **Droits** : le serveur lit les permissions de l'utilisateur dans la base (`memberships → membership_roles → role_permissions → permissions`) à chaque requête. `DB_PERMISSIONS` (dans `lib/roles.ts`) relie chaque permission de l'application aux codes de la base. Si un utilisateur n'a aucun rôle RBAC, on retombe sur son rôle historique (`users.role`) pour ne jamais verrouiller un compte existant.
++- **Équivalence vérifiée** : sur 140 combinaisons (5 rôles historiques × 28 permissions), la base donne la même réponse que l'ancienne matrice, sauf deux écarts voulus par le cahier des charges (4.1) : le directeur peut consulter le journal d'audit, et le gestionnaire de stock peut archiver des produits.
++- **Limite** : les boutons des écrans suivent encore le rôle historique ; seuls le menu, l'accès aux pages et toutes les routes API suivent la base. Les rôles personnalisés demandent donc un écran de gestion des rôles (à venir).
++- **Doublons sur les ventes** : l'en-tête `Idempotency-Key` (une clé par ouverture de la fenêtre « Nouvelle vente ») est enregistré dans la même transaction que la vente. Un envoi répété renvoie la vente d'origine, sans second retrait de stock. Les clés ne sont pas encore purgées.
++- **Tests d'isolation** : `node scripts/check-isolation.mjs` (sur une branche de test) vérifie 20 contrôles : entrepôts, transferts, inventaires, codes-barres, clés d'idempotence, numérotation, et les fonctions SQL appelées par une autre entreprise.
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/audit/route.ts Gestion_de_Stock-main/app/api/audit/route.ts
 --- orig/Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/audit/route.ts	2026-10-21 08:00:33.729401120 +0000
@@ -1042,13 +1052,13 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
      const items = await sql`
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/sales/route.ts Gestion_de_Stock-main/app/api/sales/route.ts
 --- orig/Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-22 11:31:30.697684929 +0000
++++ Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-26 19:38:00.071761409 +0000
 @@ -2,7 +2,7 @@
  import { getSql } from "@/lib/db";
  import { authorize, logAudit } from "@/lib/auth";
  import { rolesFor } from "@/lib/roles";
 -import { fail, parseBody, serverError } from "@/lib/api";
-+import { MAIN_WAREHOUSE_STOCK_ERROR, fail, isCheckViolation, isForeignKey, parseBody, serverError } from "@/lib/api";
++import { MAIN_WAREHOUSE_STOCK_ERROR, fail, idempotencyKey, isCheckViolation, isForeignKey, isUnique, parseBody, serverError } from "@/lib/api";
  import { saleSchema } from "@/lib/validation";
  
  export const runtime = "nodejs";
@@ -1060,7 +1070,38 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
        ORDER BY s.created_at DESC, s.id DESC
        LIMIT 300
      `;
-@@ -51,13 +52,13 @@
+@@ -38,9 +39,30 @@
+   const body = await parseBody(request, saleSchema);
+   if ("error" in body) return body.error;
+   const { customerId, paymentMethod, items } = body.data;
++  const idem = idempotencyKey(request);
++  if ("error" in idem) return idem.error;
++  const key = idem.key;
+   const itemsJson = JSON.stringify(items.map((item) => ({ productId: item.productId, quantity: item.quantity })));
+ 
++  const companyId = auth.user.companyId;
++
++  /** Vente déjà enregistrée avec cette clé : on renvoie le même résultat, sans rien refaire. */
++  async function replay() {
++    if (!key) return null;
++    const sql = getSql();
++    const found = await sql`
++      SELECT s.id, s.total_amount AS total
++      FROM idempotency_keys k
++      JOIN sales s ON s.id = k.result_reference::bigint AND s.company_id = k.company_id
++      WHERE k.company_id = ${companyId}::uuid AND k.key = ${key} AND k.operation = 'sale_create'
++    `;
++    return found[0] ?? null;
++  }
++
+   try {
++    const previous = await replay();
++    if (previous) return NextResponse.json({ sale: { id: previous.id, total: previous.total }, replayed: true });
++
+     const sql = getSql();
+     const rows = await sql`
+       WITH items AS (
+@@ -51,13 +73,13 @@
        ), locked AS (
          SELECT p.id, p.unit_price, p.quantity, a.qty
          FROM products p JOIN agg a ON a.product_id = p.id
@@ -1077,7 +1118,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
                 COALESCE((SELECT SUM(unit_price * qty) FROM locked), 0),
                 ${auth.user.id}::bigint, ${paymentMethod}::text
          WHERE (SELECT good FROM ok)
-@@ -71,8 +72,8 @@
+@@ -71,8 +93,12 @@
          FROM locked l WHERE p.id = l.id AND EXISTS (SELECT 1 FROM sale)
          RETURNING p.id, l.qty
        ), mov AS (
@@ -1085,15 +1126,24 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 -        SELECT id, 'out', qty, 'Vente #' || (SELECT id FROM sale), ${auth.user.id}::bigint FROM dec
 +        INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
 +        SELECT ${auth.user.companyId}::uuid, id, 'out', qty, 'Vente #' || (SELECT id FROM sale), ${auth.user.id}::bigint FROM dec
++        RETURNING 1
++      ), idem AS (
++        INSERT INTO idempotency_keys (company_id, key, operation, result_reference)
++        SELECT ${auth.user.companyId}::uuid, ${key}::text, 'sale_create', sale.id::text FROM sale WHERE ${key}::text IS NOT NULL
          RETURNING 1
        )
        SELECT (SELECT id FROM sale) AS id, (SELECT total_amount FROM sale) AS total
-@@ -82,7 +83,9 @@
+@@ -82,7 +108,14 @@
      }
      await logAudit(auth.user.id, "sale_create", "sale", Number(rows[0].id), String(rows[0].total));
      return NextResponse.json({ sale: { id: rows[0].id, total: rows[0].total } }, { status: 201 });
 -  } catch {
 +  } catch (error) {
++    if (isUnique(error) && key) {
++      // Deux requêtes simultanées avec la même clé : la seconde est annulée en entier, on renvoie la première vente.
++      const previous = await replay().catch(() => null);
++      if (previous) return NextResponse.json({ sale: { id: previous.id, total: previous.total }, replayed: true });
++    }
 +    if (isForeignKey(error)) return fail("Client invalide.", 400);
 +    if (isCheckViolation(error)) return fail(MAIN_WAREHOUSE_STOCK_ERROR, 409);
      return serverError("Impossible d’enregistrer la vente.");
@@ -1281,7 +1331,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/transfers/[id]/ship/route.ts Gestion_de_Stock-main/app/api/transfers/[id]/ship/route.ts
 --- orig/Gestion_de_Stock-main/app/api/transfers/[id]/ship/route.ts	1970-01-01 00:00:00.000000000 +0000
-+++ Gestion_de_Stock-main/app/api/transfers/[id]/ship/route.ts	2026-10-22 11:31:59.686970102 +0000
++++ Gestion_de_Stock-main/app/api/transfers/[id]/ship/route.ts	2026-10-26 11:34:44.324744041 +0000
 @@ -0,0 +1,23 @@
 +import { NextResponse } from "next/server";
 +import { getSql } from "@/lib/db";
@@ -1293,7 +1343,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +
 +/** L'opération s'exécute dans une fonction SQL unique : tout réussit ou tout est annulé. */
 +export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
-+  const auth = await authorize(request, rolesFor("transfers.write"));
++  const auth = await authorize(request, rolesFor("transfers.ship"));
 +  if ("error" in auth) return auth.error;
 +  const { id } = await context.params;
 +  if (!isUuid(id)) return fail("Identifiant invalide.");
@@ -1768,19 +1818,54 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +export default function Page() {
 +  return <AppFrame permission="transfers.view" render={(role) => <TransfersView role={role} />} />;
 +}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/app-frame.tsx Gestion_de_Stock-main/components/app-frame.tsx
+--- orig/Gestion_de_Stock-main/components/app-frame.tsx	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/components/app-frame.tsx	2026-10-26 11:35:00.824062987 +0000
+@@ -1,7 +1,13 @@
+ import { redirect } from "next/navigation";
+ import AppShell from "@/components/app-shell";
+-import { ROLE_LABELS, getSessionUser, hasUsers } from "@/lib/auth";
+-import { can, type Permission, type Role } from "@/lib/roles";
++import { ROLE_LABELS, getSessionUser, hasUsers, userCan } from "@/lib/auth";
++import { type Permission, type Role } from "@/lib/roles";
++
++/** Permissions qui déterminent les entrées visibles du menu. */
++const NAV_PERMISSIONS: Permission[] = [
++  "movements.view", "suppliers.view", "customers.view", "sales.view", "purchases.view", "reports.view",
++  "users.manage", "audit.view", "settings.manage", "warehouses.view", "transfers.view", "inventory.view"
++];
+ 
+ /** Vérifie la session et le droit d'accès, puis affiche la page dans le menu adaptable. */
+ export default async function AppFrame({
+@@ -13,9 +19,9 @@
+ }) {
+   const user = await getSessionUser();
+   if (!user) redirect((await hasUsers()) ? "/login" : "/setup");
+-  if (permission && !can(user.role, permission)) redirect("/");
++  if (permission && !userCan(user, permission)) redirect("/");
+   return (
+-    <AppShell user={{ name: user.name, role: user.role, roleLabel: ROLE_LABELS[user.role] }}>
++    <AppShell user={{ name: user.name, role: user.role, roleLabel: ROLE_LABELS[user.role], allowed: NAV_PERMISSIONS.filter((p) => userCan(user, p)) }}>
+       {render(user.role)}
+     </AppShell>
+   );
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/app-shell.tsx Gestion_de_Stock-main/components/app-shell.tsx
 --- orig/Gestion_de_Stock-main/components/app-shell.tsx	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/components/app-shell.tsx	2026-10-23 07:55:27.620205379 +0000
-@@ -5,7 +5,7 @@
++++ Gestion_de_Stock-main/components/app-shell.tsx	2026-10-26 11:35:05.448232558 +0000
+@@ -5,16 +5,19 @@
  import { useEffect, useState } from "react";
  import {
    Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
 -  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, X
 +  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Warehouse, X
  } from "lucide-react";
- import { can, type Permission, type Role } from "@/lib/roles";
+-import { can, type Permission, type Role } from "@/lib/roles";
++import { type Permission, type Role } from "@/lib/roles";
  
-@@ -15,6 +15,9 @@
+-type ShellUser = { name: string; role: Role; roleLabel: string };
++type ShellUser = { name: string; role: Role; roleLabel: string; allowed: Permission[] };
+ 
+ const NAV: { href: string; label: string; icon: typeof Package; permission?: Permission }[] = [
    { href: "/", label: "Tableau de bord", icon: LayoutDashboard },
    { href: "/produits", label: "Produits", icon: Package },
    { href: "/mouvements", label: "Mouvements", icon: ArrowLeftRight, permission: "movements.view" },
@@ -1790,6 +1875,15 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
    { href: "/ventes", label: "Ventes", icon: ShoppingCart, permission: "sales.view" },
    { href: "/achats", label: "Achats", icon: ClipboardList, permission: "purchases.view" },
    { href: "/clients", label: "Clients", icon: Users, permission: "customers.view" },
+@@ -28,7 +31,7 @@
+ export default function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {
+   const pathname = usePathname();
+   const [open, setOpen] = useState(false);
+-  const items = NAV.filter((item) => !item.permission || can(user.role, item.permission));
++  const items = NAV.filter((item) => !item.permission || user.allowed.includes(item.permission));
+   const current = items.find((item) => (item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)));
+   const initials = user.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "U";
+ 
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/inventory-view.tsx Gestion_de_Stock-main/components/inventory-view.tsx
 --- orig/Gestion_de_Stock-main/components/inventory-view.tsx	1970-01-01 00:00:00.000000000 +0000
 +++ Gestion_de_Stock-main/components/inventory-view.tsx	2026-10-23 07:56:01.785350191 +0000
@@ -2386,22 +2480,24 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
        )}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/sales-view.tsx Gestion_de_Stock-main/components/sales-view.tsx
 --- orig/Gestion_de_Stock-main/components/sales-view.tsx	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/components/sales-view.tsx	2026-10-23 11:54:47.119277698 +0000
-@@ -31,6 +31,8 @@
++++ Gestion_de_Stock-main/components/sales-view.tsx	2026-10-26 19:38:13.172654783 +0000
+@@ -31,6 +31,9 @@
    const [formError, setFormError] = useState("");
    const [saving, setSaving] = useState(false);
    const [notice, setNotice] = useState("");
 +  const [scan, setScan] = useState("");
++  const [idemKey, setIdemKey] = useState("");
 +  const [scanMessage, setScanMessage] = useState("");
    const [receipt, setReceipt] = useState<Receipt | null>(null);
    const canWrite = can(role, "sales.write");
    const canCancel = can(role, "sales.cancel");
-@@ -49,9 +51,40 @@
+@@ -49,9 +52,41 @@
      setCustomerId("");
      setPayment("cash");
      setFormError("");
 +    setScan("");
 +    setScanMessage("");
++    setIdemKey(crypto.randomUUID());
      setOpen(true);
    }
  
@@ -2437,7 +2533,15 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
    function updateLine(key: number, patch: Partial<Line>) {
      setLines((current) => current.map((line) => (line.key === key ? { ...line, ...patch } : line)));
    }
-@@ -153,6 +186,11 @@
+@@ -63,6 +98,7 @@
+     try {
+       const result = await api<{ sale: { id: string } }>("/api/sales", {
+         method: "POST",
++        headers: idemKey ? { "Idempotency-Key": idemKey } : undefined,
+         body: JSON.stringify({
+           customerId: customerId || undefined,
+           paymentMethod: payment,
+@@ -153,6 +189,11 @@
                  </select>
                </Field>
              </div>
@@ -3623,10 +3727,57 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/
 +  RETURN rnum;
 +END
 +$$;
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0014_rbac_alignment.sql Gestion_de_Stock-main/db/0014_rbac_alignment.sql
+--- orig/Gestion_de_Stock-main/db/0014_rbac_alignment.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0014_rbac_alignment.sql	2026-10-26 11:33:41.427695116 +0000
+@@ -0,0 +1,43 @@
++-- 0014 : alignement des droits RBAC sur le comportement actuel de l'application.
++-- Les permissions sont désormais lues depuis la base (roles -> role_permissions -> permissions).
++-- Cette migration ajoute les codes manquants et ajuste les rôles système pour qu'aucun
++-- utilisateur existant ne perde (ni ne gagne, hors cas listés dans le README) un droit.
++-- Additive côté permissions ; idempotente.
++
++INSERT INTO permissions (code, description) VALUES
++  ('sales.cancel', 'Annuler une vente'),
++  ('inventory.movements.read', 'Consulter le journal des mouvements'),
++  ('inventory.count.read', 'Consulter les inventaires'),
++  ('inventory.transfer.read', 'Consulter les transferts')
++ON CONFLICT (code) DO NOTHING;
++
++-- Administrateur entreprise : toutes les permissions du catalogue.
++INSERT INTO role_permissions (role_id, permission_id)
++SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
++WHERE r.is_system AND r.name = 'Administrateur entreprise'
++ON CONFLICT DO NOTHING;
++
++-- Autres rôles : droits ajoutés.
++WITH grants(role_name, code) AS (VALUES
++  ('Directeur', 'sales.cancel'), ('Directeur', 'inventory.movements.read'), ('Directeur', 'inventory.count.read'),
++  ('Directeur', 'inventory.transfer.read'), ('Directeur', 'products.create'), ('Directeur', 'products.update'),
++  ('Directeur', 'products.archive'), ('Directeur', 'inventory.adjust'), ('Directeur', 'inventory.count'),
++  ('Directeur', 'inventory.transfer.create'), ('Directeur', 'inventory.transfer.ship'), ('Directeur', 'inventory.transfer.receive'),
++  ('Directeur', 'warehouses.manage'), ('Directeur', 'suppliers.manage'), ('Directeur', 'customers.manage'),
++  ('Directeur', 'sales.create'), ('Directeur', 'purchases.create'), ('Directeur', 'purchases.submit'),
++  ('Directeur', 'purchases.cancel'), ('Directeur', 'purchases.receive'),
++  ('Gestionnaire de stock', 'inventory.movements.read'), ('Gestionnaire de stock', 'inventory.count.read'),
++  ('Gestionnaire de stock', 'inventory.transfer.read'), ('Gestionnaire de stock', 'purchases.read'),
++  ('Gestionnaire de stock', 'purchases.receive'),
++  ('Auditeur', 'inventory.movements.read'), ('Auditeur', 'inventory.count.read'), ('Auditeur', 'inventory.transfer.read')
++)
++INSERT INTO role_permissions (role_id, permission_id)
++SELECT r.id, p.id FROM grants g
++JOIN roles r ON r.is_system AND r.name = g.role_name
++JOIN permissions p ON p.code = g.code
++ON CONFLICT DO NOTHING;
++
++-- L'approbation d'un inventaire revient au responsable, pas au gestionnaire de stock (cahier des charges 4.1).
++DELETE FROM role_permissions rp USING roles r, permissions p
++WHERE rp.role_id = r.id AND rp.permission_id = p.id
++  AND r.is_system AND r.name = 'Gestionnaire de stock' AND p.code = 'inventory.count.approve';
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/api.ts Gestion_de_Stock-main/lib/api.ts
 --- orig/Gestion_de_Stock-main/lib/api.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/api.ts	2026-10-26 10:47:13.000915703 +0000
-@@ -42,3 +42,49 @@
++++ Gestion_de_Stock-main/lib/api.ts	2026-10-26 11:35:28.587846929 +0000
+@@ -42,3 +42,61 @@
  export function isForeignKey(error: unknown) {
    return /foreign key/i.test(errorText(error));
  }
@@ -3676,19 +3827,42 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +  if (/RECEIPT_INVALID/.test(text)) return fail("Réception invalide.", 400);
 +  return null;
 +}
++
++/**
++ * Clé d'idempotence (en-tête Idempotency-Key) : permet de rejouer sans risque une requête
++ * après un double clic ou un délai dépassé. Absente = pas de protection (comportement historique).
++ */
++export function idempotencyKey(request: Request): { key: string | null } | { error: NextResponse } {
++  const raw = request.headers.get("idempotency-key");
++  if (raw === null || raw.trim() === "") return { key: null };
++  const key = raw.trim();
++  if (!/^[A-Za-z0-9_-]{8,200}$/.test(key)) return { error: fail("Clé d’idempotence invalide.") };
++  return { key };
++}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/auth.ts Gestion_de_Stock-main/lib/auth.ts
 --- orig/Gestion_de_Stock-main/lib/auth.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/auth.ts	2026-10-21 08:00:33.722474891 +0000
-@@ -23,6 +23,8 @@
++++ Gestion_de_Stock-main/lib/auth.ts	2026-10-26 11:35:00.823083442 +0000
+@@ -2,7 +2,7 @@
+ import { cookies } from "next/headers";
+ import { NextResponse } from "next/server";
+ import { getSql } from "@/lib/db";
+-import { ROLES, ROLE_LABELS, isRole, type Role } from "@/lib/roles";
++import { DB_PERMISSIONS, ROLES, ROLE_LABELS, can, isRole, type Permission, type PermissionGuard, type Role } from "@/lib/roles";
+ 
+ export { ROLES, ROLE_LABELS, isRole };
+ export type { Role };
+@@ -23,6 +23,10 @@
    email: string;
    name: string;
    role: Role;
 +  /** Entreprise active de la session (appartenance active). Toutes les requêtes métier doivent la filtrer. */
 +  companyId: string;
++  /** Codes de permission issus des rôles RBAC de l'utilisateur (base de données), relus à chaque requête. */
++  permissions: string[];
  };
  
  
-@@ -114,13 +116,22 @@
+@@ -114,13 +118,31 @@
      const parsed = parseToken(token);
      if (!parsed) return null;
      const sql = getSql();
@@ -3696,7 +3870,15 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
      const rows = await sql`
 -      SELECT id, email, name, role, active, token_version AS "tokenVersion"
 -      FROM users WHERE id = ${parsed.userId}
-+      SELECT u.id, u.email, u.name, u.role, u.active, u.token_version AS "tokenVersion", m.company_id AS "companyId"
++      SELECT u.id, u.email, u.name, u.role, u.active, u.token_version AS "tokenVersion", m.company_id AS "companyId",
++             COALESCE((
++               SELECT array_agg(DISTINCT p.code)
++               FROM membership_roles mr
++               JOIN roles r ON r.id = mr.role_id
++               JOIN role_permissions rp ON rp.role_id = r.id
++               JOIN permissions p ON p.id = rp.permission_id
++               WHERE mr.membership_id = m.id
++             ), ARRAY[]::text[]) AS permissions
 +      FROM users u
 +      JOIN company_memberships m ON m.user_id = u.id AND m.status = 'active'
 +      JOIN companies c ON c.id = m.company_id AND c.status = 'active'
@@ -3709,12 +3891,51 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 -    return { id: Number(row.id), email: String(row.email), name: String(row.name), role: row.role };
 +    return {
 +      id: Number(row.id), email: String(row.email), name: String(row.name), role: row.role,
-+      companyId: String(row.companyId)
++      companyId: String(row.companyId),
++      permissions: Array.isArray(row.permissions) ? row.permissions.map(String) : []
 +    };
    } catch {
      return null;
    }
-@@ -166,8 +177,11 @@
+@@ -137,11 +159,27 @@
+ }
+ 
+ /**
++ * Les permissions viennent de la base (rôles RBAC de l'utilisateur). Si aucun rôle RBAC n'est affecté
++ * à l'utilisateur, on retombe sur son rôle historique (users.role) pour ne jamais verrouiller un compte existant.
++ */
++function isAllowed(user: SessionUser, allowed: PermissionGuard) {
++  return allowed.permission ? userCan(user, allowed.permission) : allowed.includes(user.role);
++}
++
++/** Droit de l'utilisateur pour une permission de l'application (base de données, sinon rôle historique). */
++export function userCan(user: SessionUser, permission: Permission) {
++  if (user.permissions.length > 0) {
++    return DB_PERMISSIONS[permission].every((code) => user.permissions.includes(code));
++  }
++  return can(user.role, permission);
++}
++
++/**
+  * Contrôle d'accès des routes API : session valide, rôle autorisé, origine identique pour les écritures.
+  */
+ export async function authorize(
+   request: Request,
+-  allowed?: readonly Role[]
++  allowed?: PermissionGuard
+ ): Promise<{ user: SessionUser } | { error: NextResponse }> {
+   if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(request)) {
+     return { error: NextResponse.json({ error: "Origine non autorisée." }, { status: 403 }) };
+@@ -150,7 +188,7 @@
+   if (!user) {
+     return { error: NextResponse.json({ error: "Authentification requise." }, { status: 401 }) };
+   }
+-  if (allowed && !allowed.includes(user.role)) {
++  if (allowed && !isAllowed(user, allowed)) {
+     return { error: NextResponse.json({ error: "Accès refusé pour votre rôle." }, { status: 403 }) };
+   }
+   return { user };
+@@ -166,8 +204,11 @@
    try {
      const sql = getSql();
      await sql`
@@ -3728,6 +3949,18 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
      `;
    } catch {
      // Le journal ne doit jamais bloquer l'action principale.
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/client.ts Gestion_de_Stock-main/lib/client.ts
+--- orig/Gestion_de_Stock-main/lib/client.ts	2026-10-20 13:18:32.000000000 +0000
++++ Gestion_de_Stock-main/lib/client.ts	2026-10-26 11:35:28.587846929 +0000
+@@ -6,7 +6,7 @@
+   const response = await fetch(url, {
+     ...init,
+     cache: "no-store",
+-    headers: init?.body ? { "Content-Type": "application/json" } : undefined
++    headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...((init?.headers as Record<string, string> | undefined) ?? {}) }
+   });
+   if (response.status === 401) {
+     window.location.href = "/login";
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/format.ts Gestion_de_Stock-main/lib/format.ts
 --- orig/Gestion_de_Stock-main/lib/format.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/lib/format.ts	2026-10-22 11:31:30.697395754 +0000
@@ -3742,7 +3975,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
  };
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/roles.ts Gestion_de_Stock-main/lib/roles.ts
 --- orig/Gestion_de_Stock-main/lib/roles.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/roles.ts	2026-10-26 10:47:13.000661592 +0000
++++ Gestion_de_Stock-main/lib/roles.ts	2026-10-26 11:34:37.359038903 +0000
 @@ -9,6 +9,15 @@
    seller: "Vendeur"
  };
@@ -3759,7 +3992,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
  export function isRole(value: unknown): value is Role {
    return typeof value === "string" && (ROLES as readonly string[]).includes(value);
  }
-@@ -20,8 +29,11 @@
+@@ -20,12 +29,15 @@
    | "customers.view" | "customers.write"
    | "sales.view" | "sales.write" | "sales.cancel"
    | "reports.view" | "users.manage"
@@ -3768,23 +4001,30 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +  | "purchases.view" | "purchases.write" | "purchases.receive" | "purchases.approve"
 +  | "audit.view" | "settings.manage"
 +  | "warehouses.view" | "warehouses.write"
-+  | "transfers.view" | "transfers.write" | "transfers.receive"
++  | "transfers.view" | "transfers.write" | "transfers.ship" | "transfers.receive"
 +  | "inventory.view" | "inventory.count" | "inventory.approve";
  
  const PERMISSIONS: Record<Permission, readonly Role[]> = {
    "products.write": ["super_admin", "admin", "manager", "storekeeper"],
-@@ -40,8 +52,17 @@
+-  "products.archive": ["super_admin", "admin", "manager"],
++  "products.archive": ["super_admin", "admin", "manager", "storekeeper"],
+   "movements.view": ["super_admin", "admin", "manager", "storekeeper"],
+   "movements.write": ["super_admin", "admin", "manager", "storekeeper"],
+   "suppliers.view": ["super_admin", "admin", "manager", "storekeeper"],
+@@ -40,14 +52,62 @@
    "purchases.view": ["super_admin", "admin", "manager", "storekeeper"],
    "purchases.write": ["super_admin", "admin", "manager"],
    "purchases.receive": ["super_admin", "admin", "manager", "storekeeper"],
-+  "purchases.approve": ["super_admin", "admin", "manager"],
-   "audit.view": ["super_admin", "admin"],
+-  "audit.view": ["super_admin", "admin"],
 -  "settings.manage": ["super_admin", "admin"]
++  "purchases.approve": ["super_admin", "admin", "manager"],
++  "audit.view": ["super_admin", "admin", "manager"],
 +  "settings.manage": ["super_admin", "admin"],
 +  "warehouses.view": ["super_admin", "admin", "manager", "storekeeper"],
 +  "warehouses.write": ["super_admin", "admin", "manager"],
 +  "transfers.view": ["super_admin", "admin", "manager", "storekeeper"],
 +  "transfers.write": ["super_admin", "admin", "manager", "storekeeper"],
++  "transfers.ship": ["super_admin", "admin", "manager", "storekeeper"],
 +  "transfers.receive": ["super_admin", "admin", "manager", "storekeeper"],
 +  "inventory.view": ["super_admin", "admin", "manager", "storekeeper"],
 +  "inventory.count": ["super_admin", "admin", "manager", "storekeeper"],
@@ -3792,6 +4032,52 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
  };
  
  export function can(role: Role, permission: Permission) {
+   return PERMISSIONS[permission].includes(role);
+ }
+ 
+-export function rolesFor(permission: Permission) {
+-  return PERMISSIONS[permission];
++/**
++ * Codes de la table `permissions` (base de données) exigés pour chaque permission de l'application.
++ * Les droits réels d'un utilisateur viennent de ses rôles en base : memberships -> membership_roles -> role_permissions.
++ */
++export const DB_PERMISSIONS: Record<Permission, readonly string[]> = {
++  "products.write": ["products.create", "products.update"],
++  "products.archive": ["products.archive"],
++  "movements.view": ["inventory.movements.read"],
++  "movements.write": ["inventory.adjust"],
++  "suppliers.view": ["suppliers.read"],
++  "suppliers.write": ["suppliers.manage"],
++  "customers.view": ["customers.read"],
++  "customers.write": ["customers.manage"],
++  "sales.view": ["sales.read"],
++  "sales.write": ["sales.create"],
++  "sales.cancel": ["sales.cancel"],
++  "reports.view": ["reports.finance.read"],
++  "users.manage": ["users.manage"],
++  "purchases.view": ["purchases.read"],
++  "purchases.write": ["purchases.create"],
++  "purchases.receive": ["purchases.receive"],
++  "purchases.approve": ["purchases.approve"],
++  "audit.view": ["audit.read"],
++  "settings.manage": ["companies.manage"],
++  "warehouses.view": ["warehouses.read"],
++  "warehouses.write": ["warehouses.manage"],
++  "transfers.view": ["inventory.transfer.read"],
++  "transfers.write": ["inventory.transfer.create"],
++  "transfers.ship": ["inventory.transfer.ship"],
++  "transfers.receive": ["inventory.transfer.receive"],
++  "inventory.view": ["inventory.count.read"],
++  "inventory.count": ["inventory.count"],
++  "inventory.approve": ["inventory.count.approve"]
++};
++
++/** Liste de rôles historiques, étiquetée de la permission visée pour que le serveur vérifie la base. */
++export type PermissionGuard = readonly Role[] & { permission?: Permission };
++
++export function rolesFor(permission: Permission): PermissionGuard {
++  return Object.assign([...PERMISSIONS[permission]], { permission });
+ }
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/stock.ts Gestion_de_Stock-main/lib/stock.ts
 --- orig/Gestion_de_Stock-main/lib/stock.ts	2026-10-20 13:18:32.000000000 +0000
 +++ Gestion_de_Stock-main/lib/stock.ts	2026-10-21 08:01:02.467322738 +0000
@@ -3898,10 +4184,12 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +});
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/scripts/check-isolation.mjs Gestion_de_Stock-main/scripts/check-isolation.mjs
 --- orig/Gestion_de_Stock-main/scripts/check-isolation.mjs	1970-01-01 00:00:00.000000000 +0000
-+++ Gestion_de_Stock-main/scripts/check-isolation.mjs	2026-10-21 08:02:21.415400613 +0000
-@@ -0,0 +1,51 @@
-+// Vérifie l'isolation multi-entreprises au niveau de la base (à lancer sur une branche Neon de test, jamais en production).
++++ Gestion_de_Stock-main/scripts/check-isolation.mjs	2026-10-26 19:37:30.646499742 +0000
+@@ -0,0 +1,118 @@
++// Vérifie l'isolation multi-entreprises au niveau de la base (cahier des charges 9.3 : tests bloquants).
++// À lancer sur une branche Neon de test, JAMAIS en production.
 +// Usage : DATABASE_URL="postgresql://..." node scripts/check-isolation.mjs
++// Les contrôles liés à une migration absente (ex. 0013) sont ignorés avec la mention « ignoré ».
 +import { neon } from "@neondatabase/serverless";
 +
 +const url = process.env.DATABASE_URL;
@@ -3911,20 +4199,25 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/scr
 +let failures = 0;
 +
 +function check(name, ok) {
-+  console.log(`${ok ? "OK  " : "ÉCHEC"} ${name}`);
++  console.log(`${ok ? "OK    " : "ÉCHEC "} ${name}`);
 +  if (!ok) failures += 1;
 +}
-+async function rejected(promise) {
-+  try { await promise; return false; } catch { return true; }
++function skipped(name) { console.log(`ignoré ${name}`); }
++async function rejected(promise, pattern) {
++  try { await promise; return false; } catch (error) {
++    return pattern ? pattern.test(String(error?.message ?? error)) : true;
++  }
 +}
++async function exists(query) { return (await query).length > 0; }
 +
 +const a = (await sql`INSERT INTO companies (name, slug) VALUES (${"Test A " + tag}, ${"test-a-" + tag}) RETURNING id`)[0].id;
 +const b = (await sql`INSERT INTO companies (name, slug) VALUES (${"Test B " + tag}, ${"test-b-" + tag}) RETURNING id`)[0].id;
 +
 +try {
++  // --- Catalogue et documents historiques
 +  const pa = (await sql`INSERT INTO products (company_id, sku, name) VALUES (${a}::uuid, 'ISO-1', 'Produit A') RETURNING id`)[0].id;
-+  const sameSkuOk = !(await rejected(sql`INSERT INTO products (company_id, sku, name) VALUES (${b}::uuid, 'ISO-1', 'Produit B')`));
-+  check("deux entreprises peuvent utiliser le même SKU", sameSkuOk);
++  const pb = (await sql`INSERT INTO products (company_id, sku, name) VALUES (${b}::uuid, 'ISO-1', 'Produit B') RETURNING id`)[0].id;
++  check("deux entreprises peuvent utiliser le même SKU", Boolean(pb));
 +  check("SKU dupliqué dans la même entreprise refusé",
 +    await rejected(sql`INSERT INTO products (company_id, sku, name) VALUES (${a}::uuid, 'ISO-1', 'Doublon')`));
 +  check("mouvement de B sur un produit de A refusé",
@@ -3933,20 +4226,80 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/scr
 +  const cb = (await sql`INSERT INTO customers (company_id, name) VALUES (${b}::uuid, 'Client B') RETURNING id`)[0].id;
 +  check("vente de A avec un client de B refusée",
 +    await rejected(sql`INSERT INTO sales (company_id, customer_id, status, total_amount, payment_method) VALUES (${a}::uuid, ${cb}::bigint, 'completed', 0, 'cash')`));
-+
 +  const sb = (await sql`INSERT INTO suppliers (company_id, name) VALUES (${b}::uuid, 'Fournisseur B') RETURNING id`)[0].id;
 +  check("commande de A avec un fournisseur de B refusée",
 +    await rejected(sql`INSERT INTO purchase_orders (company_id, supplier_id) VALUES (${a}::uuid, ${sb}::bigint)`));
++
++  // --- Entrepôts, transferts, inventaires (phase 3)
++  const wa = (await sql`INSERT INTO warehouses (company_id, name, code) VALUES (${a}::uuid, 'Entrepôt A', 'WA') RETURNING id`)[0].id;
++  const wa2 = (await sql`INSERT INTO warehouses (company_id, name, code) VALUES (${a}::uuid, 'Entrepôt A2', 'WA2') RETURNING id`)[0].id;
++  const wb = (await sql`INSERT INTO warehouses (company_id, name, code) VALUES (${b}::uuid, 'Entrepôt B', 'WB') RETURNING id`)[0].id;
++
++  check("transfert de A vers un entrepôt de B refusé",
++    await rejected(sql`INSERT INTO stock_transfers (company_id, transfer_number, source_warehouse_id, destination_warehouse_id) VALUES (${a}::uuid, 'T-X', ${wa}::uuid, ${wb}::uuid)`));
++  check("inventaire de A sur un entrepôt de B refusé",
++    await rejected(sql`INSERT INTO inventory_counts (company_id, count_number, warehouse_id) VALUES (${a}::uuid, 'I-X', ${wb}::uuid)`));
++  check("ligne de transfert sans transfert refusée",
++    await rejected(sql`INSERT INTO stock_transfer_lines (company_id, transfer_id, product_id, quantity_requested) VALUES (${a}::uuid, gen_random_uuid(), ${pa}::bigint, 1)`));
++
++  const ta = (await sql`INSERT INTO stock_transfers (company_id, transfer_number, source_warehouse_id, destination_warehouse_id) VALUES (${a}::uuid, 'T-1', ${wa}::uuid, ${wa2}::uuid) RETURNING id`)[0].id;
++  check("ligne de B dans un transfert de A refusée",
++    await rejected(sql`INSERT INTO stock_transfer_lines (company_id, transfer_id, product_id, quantity_requested) VALUES (${b}::uuid, ${ta}::uuid, ${pb}::bigint, 1)`));
++  check("expédition du transfert de A par B refusée",
++    await rejected(sql`SELECT ship_transfer(${b}::uuid, ${ta}::uuid, NULL::bigint)`, /TRANSFER_NOT_FOUND/));
++  check("annulation du transfert de A par B refusée",
++    await rejected(sql`SELECT cancel_transfer(${b}::uuid, ${ta}::uuid)`, /TRANSFER_NOT_FOUND/));
++
++  const ca = (await sql`INSERT INTO inventory_counts (company_id, count_number, warehouse_id, status) VALUES (${a}::uuid, 'I-1', ${wa}::uuid, 'submitted') RETURNING id`)[0].id;
++  check("approbation de l'inventaire de A par B refusée",
++    await rejected(sql`SELECT approve_inventory_count(${b}::uuid, ${ca}::uuid, NULL::bigint)`, /INVENTORY_NOT_FOUND/));
++
++  // --- Codes-barres, idempotence, numérotation
++  await sql`INSERT INTO product_barcodes (company_id, product_id, barcode) VALUES (${a}::uuid, ${pa}::bigint, 'CODE-ISO'), (${b}::uuid, ${pb}::bigint, 'CODE-ISO')`;
++  check("même code-barres accepté dans deux entreprises", true);
++  check("code-barres de B sur un produit de A refusé",
++    await rejected(sql`INSERT INTO product_barcodes (company_id, product_id, barcode) VALUES (${b}::uuid, ${pa}::bigint, 'CODE-X')`));
++  check("code-barres dupliqué dans la même entreprise refusé",
++    await rejected(sql`INSERT INTO product_barcodes (company_id, product_id, barcode) VALUES (${a}::uuid, ${pa}::bigint, 'CODE-ISO')`));
++
++  await sql`INSERT INTO idempotency_keys (company_id, key, operation) VALUES (${a}::uuid, 'meme-cle-1234', 'sale_create'), (${b}::uuid, 'meme-cle-1234', 'sale_create')`;
++  check("même clé d'idempotence acceptée dans deux entreprises", true);
++  check("clé d'idempotence rejouée refusée",
++    await rejected(sql`INSERT INTO idempotency_keys (company_id, key, operation) VALUES (${a}::uuid, 'meme-cle-1234', 'sale_create')`));
++
++  // --- Achats (migration 0013) : ignoré si elle n'est pas appliquée
++  if (await exists(sql`SELECT 1 FROM pg_proc WHERE proname = 'receive_purchase'`)) {
++    const oa = (await sql`INSERT INTO purchase_orders (company_id, status, total_cost) VALUES (${a}::uuid, 'ordered', 0) RETURNING id`)[0].id;
++    await sql`INSERT INTO purchase_order_items (order_id, product_id, quantity, unit_cost) VALUES (${oa}::bigint, ${pa}::bigint, 5, 10)`;
++    check("réception de la commande de A par B refusée",
++      await rejected(sql`SELECT receive_purchase(${b}::uuid, ${oa}::bigint, NULL::bigint, NULL::jsonb, NULL::text)`, /PURCHASE_NOT_FOUND/));
++    check("bon de réception de B sur une commande de A refusé",
++      await rejected(sql`INSERT INTO goods_receipts (company_id, order_id, receipt_number) VALUES (${b}::uuid, ${oa}::bigint, 'REC-X')`));
++  } else {
++    skipped("contrôles de réception d'achat (migration 0013 absente)");
++  }
 +} finally {
 +  for (const id of [a, b]) {
-+    await sql`DELETE FROM stock_movements WHERE company_id = ${id}::uuid`;
-+    await sql`DELETE FROM stock_balances WHERE company_id = ${id}::uuid`;
-+    await sql`DELETE FROM purchase_orders WHERE company_id = ${id}::uuid`;
-+    await sql`DELETE FROM sales WHERE company_id = ${id}::uuid`;
-+    await sql`DELETE FROM products WHERE company_id = ${id}::uuid`;
-+    await sql`DELETE FROM customers WHERE company_id = ${id}::uuid`;
-+    await sql`DELETE FROM suppliers WHERE company_id = ${id}::uuid`;
-+    await sql`DELETE FROM companies WHERE id = ${id}::uuid`;
++    for (const statement of [
++      sql`DELETE FROM goods_receipts WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM idempotency_keys WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM document_sequences WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM stock_transfers WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM inventory_counts WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM product_barcodes WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM stock_movements WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM stock_balances WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM purchase_order_items WHERE order_id IN (SELECT id FROM purchase_orders WHERE company_id = ${id}::uuid)`,
++      sql`DELETE FROM purchase_orders WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM sales WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM products WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM customers WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM suppliers WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM warehouses WHERE company_id = ${id}::uuid`,
++      sql`DELETE FROM companies WHERE id = ${id}::uuid`
++    ]) {
++      try { await statement; } catch { /* table absente (migration non appliquée) : on continue le nettoyage */ }
++    }
 +  }
 +}
 +console.log(failures === 0 ? "\nIsolation vérifiée." : `\n${failures} contrôle(s) en échec.`);
