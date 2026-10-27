@@ -15,8 +15,10 @@ export async function GET(request: Request) {
     const sales = await sql`
       SELECT s.id, s.status, s.total_amount AS total, s.payment_method AS "paymentMethod",
              s.created_at AS "createdAt", c.name AS "customerName", u.name AS "userName",
-             (SELECT COALESCE(SUM(quantity), 0)::int FROM sale_items WHERE sale_id = s.id) AS "itemCount"
+             (SELECT COALESCE(SUM(quantity), 0)::int FROM sale_items WHERE sale_id = s.id) AS "itemCount",
+             COALESCE(b.due, 0) AS due
       FROM sales s
+      LEFT JOIN sale_balances b ON b.sale_id = s.id AND b.company_id = s.company_id
       LEFT JOIN customers c ON c.id = s.customer_id
       LEFT JOIN users u ON u.id = s.user_id
       WHERE s.company_id = ${auth.user.companyId}::uuid
@@ -38,7 +40,7 @@ export async function POST(request: Request) {
   if ("error" in auth) return auth.error;
   const body = await parseBody(request, saleSchema);
   if ("error" in body) return body.error;
-  const { customerId, paymentMethod, items } = body.data;
+  const { customerId, paymentMethod, items, amountPaid } = body.data;
   const idem = idempotencyKey(request);
   if ("error" in idem) return idem.error;
   const key = idem.key;
@@ -64,6 +66,32 @@ export async function POST(request: Request) {
     if (previous) return NextResponse.json({ sale: { id: previous.id, total: previous.total }, replayed: true });
 
     const sql = getSql();
+
+    // Montant encaissé : le total attendu est recalculé côté serveur à partir des prix en base.
+    const quote = await sql`
+      SELECT COALESCE(SUM(p.unit_price * x.qty), 0) AS total
+      FROM products p
+      JOIN (SELECT (e->>'productId')::bigint AS pid, SUM((e->>'quantity')::int)::int AS qty FROM jsonb_array_elements(${itemsJson}::jsonb) e GROUP BY 1) x ON x.pid = p.id
+      WHERE p.company_id = ${companyId}::uuid AND p.archived = FALSE
+    `;
+    const expectedTotal = Number(quote[0]?.total ?? 0);
+    const paid = amountPaid ?? expectedTotal;
+    if (paid > expectedTotal) return fail("Le montant encaissé dépasse le total de la vente.", 400);
+    const due = expectedTotal - paid;
+    if (due > 0) {
+      if (!customerId) return fail("Une vente à crédit nécessite de choisir un client.", 400);
+      const credit = await sql`
+        SELECT c.credit_limit AS "limit",
+               COALESCE((SELECT SUM(b.due) FROM sale_balances b WHERE b.company_id = c.company_id AND b.customer_id = c.id AND b.status = 'completed'), 0) AS outstanding
+        FROM customers c WHERE c.id = ${customerId}::bigint AND c.company_id = ${companyId}::uuid
+      `;
+      if (!credit[0]) return fail("Client invalide.", 400);
+      if (credit[0].limit !== null && Number(credit[0].outstanding) + due > Number(credit[0].limit)) {
+        const fmt = (n: number) => `${new Intl.NumberFormat("fr-FR").format(Math.round(n))} FCFA`;
+        return fail(`Plafond de crédit dépassé : ${fmt(Number(credit[0].outstanding))} déjà dus sur un plafond de ${fmt(Number(credit[0].limit))}.`, 409);
+      }
+    }
+
     const rows = await sql`
       WITH items AS (
         SELECT (e->>'productId')::bigint AS product_id, (e->>'quantity')::int AS qty
@@ -76,7 +104,8 @@ export async function POST(request: Request) {
         WHERE p.archived = FALSE AND p.company_id = ${auth.user.companyId}::uuid FOR UPDATE OF p
       ), ok AS (
         SELECT ((SELECT COUNT(*) FROM locked) = (SELECT COUNT(*) FROM agg)
-                AND NOT EXISTS (SELECT 1 FROM locked WHERE quantity < qty)) AS good
+                AND NOT EXISTS (SELECT 1 FROM locked WHERE quantity < qty)
+                AND ${paid}::numeric <= COALESCE((SELECT SUM(unit_price * qty) FROM locked), 0)) AS good
       ), sale AS (
         INSERT INTO sales (company_id, customer_id, status, total_amount, user_id, payment_method)
         SELECT ${auth.user.companyId}::uuid, ${customerId ?? null}::bigint, 'completed',
@@ -95,6 +124,25 @@ export async function POST(request: Request) {
       ), mov AS (
         INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
         SELECT ${auth.user.companyId}::uuid, id, 'out', qty, 'Vente #' || (SELECT id FROM sale), ${auth.user.id}::bigint FROM dec
+        RETURNING 1
+      ), payseq AS (
+        INSERT INTO document_sequences (company_id, document_type, period, next_value)
+        SELECT ${companyId}::uuid, 'payment', to_char(now(), 'YYYY'), 2
+        WHERE EXISTS (SELECT 1 FROM sale) AND ${paid}::numeric > 0
+        ON CONFLICT (company_id, document_type, period) DO UPDATE SET next_value = document_sequences.next_value + 1
+        RETURNING period, next_value - 1 AS n
+      ), pay AS (
+        INSERT INTO payments (company_id, payment_number, direction, party_type, customer_id, amount, method_id, status, created_by)
+        SELECT ${companyId}::uuid, 'PAY-' || payseq.period || '-' || lpad(payseq.n::text, 5, '0'), 'in',
+               CASE WHEN ${customerId ?? null}::bigint IS NULL THEN 'other' ELSE 'customer' END, ${customerId ?? null}::bigint,
+               ${paid}::numeric,
+               (SELECT m.id FROM payment_methods m WHERE m.company_id = ${companyId}::uuid AND m.code = ${paymentMethod}::text AND m.status = 'active'),
+               'posted', ${auth.user.id}::bigint
+        FROM payseq
+        RETURNING id, amount
+      ), alloc AS (
+        INSERT INTO payment_allocations (company_id, payment_id, document_type, document_id, allocated_amount)
+        SELECT ${companyId}::uuid, pay.id, 'sale', (SELECT id FROM sale), pay.amount FROM pay
         RETURNING 1
       ), idem AS (
         INSERT INTO idempotency_keys (company_id, key, operation, result_reference)

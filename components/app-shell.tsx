@@ -5,11 +5,12 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
-  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Warehouse, X
+  Settings, ShoppingCart, Truck, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Wallet, Warehouse, X
 } from "lucide-react";
 import { type Permission, type Role } from "@/lib/roles";
+import Avatar from "@/components/avatar";
 
-type ShellUser = { name: string; role: Role; roleLabel: string; allowed: Permission[] };
+type ShellUser = { id: number; avatarVersion: number | null; name: string; role: Role; roleLabel: string; allowed: Permission[] };
 
 const NAV: { href: string; label: string; icon: typeof Package; permission?: Permission }[] = [
   { href: "/", label: "Tableau de bord", icon: LayoutDashboard },
@@ -18,6 +19,7 @@ const NAV: { href: string; label: string; icon: typeof Package; permission?: Per
   { href: "/entrepots", label: "Entrepôts", icon: Warehouse, permission: "warehouses.view" },
   { href: "/transferts", label: "Transferts", icon: ArrowRightLeft, permission: "transfers.view" },
   { href: "/inventaires", label: "Inventaires", icon: ClipboardCheck, permission: "inventory.view" },
+  { href: "/paiements", label: "Paiements", icon: Wallet, permission: "payments.view" },
   { href: "/ventes", label: "Ventes", icon: ShoppingCart, permission: "sales.view" },
   { href: "/achats", label: "Achats", icon: ClipboardList, permission: "purchases.view" },
   { href: "/clients", label: "Clients", icon: Users, permission: "customers.view" },
@@ -33,7 +35,6 @@ export default function AppShell({ user, children }: { user: ShellUser; children
   const [open, setOpen] = useState(false);
   const items = NAV.filter((item) => !item.permission || user.allowed.includes(item.permission));
   const current = items.find((item) => (item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)));
-  const initials = user.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "U";
 
   useEffect(() => {
     setOpen(false);
@@ -72,7 +73,7 @@ export default function AppShell({ user, children }: { user: ShellUser; children
           })}
         </nav>
         <div className="user-card">
-          <div className="avatar">{initials}</div>
+          <Avatar userId={user.id} name={user.name} version={user.avatarVersion} />
           <div className="user-info"><strong>{user.name}</strong><span>{user.roleLabel}</span></div>
           <button type="button" className="logout-icon" onClick={logout} aria-label="Se déconnecter" title="Se déconnecter"><LogOut size={18} /></button>
         </div>
@@ -82,7 +83,7 @@ export default function AppShell({ user, children }: { user: ShellUser; children
         <header className="topbar">
           <button type="button" className="icon-btn menu-btn" onClick={() => setOpen(true)} aria-label="Ouvrir le menu"><Menu size={22} /></button>
           <h2 className="topbar-title">{current?.label ?? "Gestion de Stock"}</h2>
-          <div className="topbar-user"><UserRound size={16} /><span>{user.name}</span></div>
+          <div className="topbar-user"><Avatar userId={user.id} name={user.name} version={user.avatarVersion} size={26} /><span>{user.name}</span></div>
         </header>
         <main className="content">{children}</main>
       </div>

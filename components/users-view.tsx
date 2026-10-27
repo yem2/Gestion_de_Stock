@@ -3,11 +3,12 @@
 import { useState } from "react";
 import { Copy, KeyRound, Plus } from "lucide-react";
 import { api, useApi } from "@/lib/client";
+import Avatar from "@/components/avatar";
 import { dateTime } from "@/lib/format";
 import { ROLE_LABELS, isRole, type Role } from "@/lib/roles";
 import { Alert, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui";
 
-type UserRow = { id: string; email: string; name: string; role: string; active: boolean; lastLoginAt: string | null };
+type UserRow = { id: string; email: string; name: string; role: string; active: boolean; lastLoginAt: string | null; avatarVersion?: number | null };
 type ResetRequest = { id: string; requestedAt: string; name: string; email: string; role: string };
 
 const ASSIGNABLE: Role[] = ["admin", "manager", "storekeeper", "seller"];
@@ -106,7 +107,7 @@ export default function UsersView({ role }: { role: Role }) {
             <tbody>
               {list.map((u) => (
                 <tr key={u.id}>
-                  <td data-label="Nom"><strong>{u.name}</strong></td>
+                  <td data-label="Nom"><span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Avatar userId={u.id} name={u.name} version={u.avatarVersion} size={30} /><strong>{u.name}</strong></span></td>
                   <td data-label="E-mail">{u.email}</td>
                   <td data-label="Rôle">{isRole(u.role) ? ROLE_LABELS[u.role] : u.role}</td>
                   <td data-label="Statut"><span className={`badge ${u.active ? "badge-ok" : "badge-danger"}`}>{u.active ? "Actif" : "Désactivé"}</span></td>

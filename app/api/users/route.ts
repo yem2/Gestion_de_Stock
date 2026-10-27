@@ -14,7 +14,8 @@ export async function GET(request: Request) {
   try {
     const sql = getSql();
     const users = await sql`
-      SELECT u.id, u.email, u.name, u.role, u.active, u.last_login_at AS "lastLoginAt", u.created_at AS "createdAt"
+      SELECT u.id, u.email, u.name, u.role, u.active, u.last_login_at AS "lastLoginAt", u.created_at AS "createdAt",
+             (SELECT (extract(epoch FROM a.updated_at) * 1000)::bigint FROM user_avatars a WHERE a.user_id = u.id) AS "avatarVersion"
       FROM users u JOIN company_memberships m ON m.user_id = u.id AND m.company_id = ${auth.user.companyId}::uuid
       ORDER BY u.created_at ASC LIMIT 500
     `;

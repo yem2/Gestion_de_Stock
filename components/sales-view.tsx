@@ -7,7 +7,7 @@ import { PAYMENT_LABELS, dateTime, money } from "@/lib/format";
 import { can, type Role } from "@/lib/roles";
 import { Alert, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui";
 
-type Sale = { id: string; status: string; total: string; paymentMethod: string; createdAt: string; customerName: string | null; userName: string | null; itemCount: number };
+type Sale = { id: string; status: string; total: string; paymentMethod: string; createdAt: string; customerName: string | null; userName: string | null; itemCount: number; due?: string };
 type Product = { id: string; name: string; sku: string; quantity: number; unitPrice: string };
 type Customer = { id: string; name: string };
 type Line = { key: number; productId: string; quantity: string };
@@ -31,6 +31,7 @@ export default function SalesView({ role }: { role: Role }) {
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [amountPaid, setAmountPaid] = useState("");
   const [scan, setScan] = useState("");
   const [idemKey, setIdemKey] = useState("");
   const [scanMessage, setScanMessage] = useState("");
@@ -52,6 +53,7 @@ export default function SalesView({ role }: { role: Role }) {
     setCustomerId("");
     setPayment("cash");
     setFormError("");
+    setAmountPaid("");
     setScan("");
     setScanMessage("");
     setIdemKey(crypto.randomUUID());
@@ -102,6 +104,7 @@ export default function SalesView({ role }: { role: Role }) {
         body: JSON.stringify({
           customerId: customerId || undefined,
           paymentMethod: payment,
+          amountPaid: amountPaid.trim() === "" ? undefined : Number(amountPaid),
           items: lines.map((line) => ({ productId: line.productId, quantity: line.quantity }))
         })
       });
@@ -158,7 +161,7 @@ export default function SalesView({ role }: { role: Role }) {
                   <td data-label="Date">{dateTime(s.createdAt)}</td>
                   <td data-label="Client">{s.customerName ?? "Client comptoir"}</td>
                   <td data-label="Articles" className="num">{s.itemCount}</td>
-                  <td data-label="Paiement">{PAYMENT_LABELS[s.paymentMethod] ?? s.paymentMethod}</td>
+                  <td data-label="Paiement">{PAYMENT_LABELS[s.paymentMethod] ?? s.paymentMethod}{s.status === "completed" && Number(s.due ?? 0) > 0 && <> <span className="badge badge-warn">Reste dû {money(s.due ?? 0)}</span></>}</td>
                   <td data-label="Total" className="num"><strong>{money(s.total)}</strong></td>
                   <td data-label="Statut"><span className={`badge ${STATUS[s.status]?.cls ?? "badge-muted"}`}>{STATUS[s.status]?.label ?? s.status}</span></td>
                   <td className="actions">
@@ -207,6 +210,14 @@ export default function SalesView({ role }: { role: Role }) {
             ))}
             <button type="button" className="btn btn-sm" onClick={() => setLines((c) => [...c, { key: Date.now(), productId: "", quantity: "1" }])}><Plus size={16} /> Ajouter un article</button>
             <div className="total-bar"><span>Total</span><strong>{money(total)}</strong></div>
+            <div className="form-grid" style={{ marginTop: 12 }}>
+              <Field label="Montant encaissé (vide = totalité)" span>
+                <input type="number" min={0} max={total} step="1" inputMode="numeric" value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} placeholder={String(total)} />
+              </Field>
+            </div>
+            {amountPaid.trim() !== "" && Number(amountPaid) < total && (
+              <p className="hint" style={{ marginTop: 6 }}>Vente à crédit : reste dû {money(total - Number(amountPaid))}. Un client est obligatoire.</p>
+            )}
             <div className="form-actions">
               <button type="button" className="btn" onClick={() => setOpen(false)}>Annuler</button>
               <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Enregistrement…" : "Valider la vente"}</button>

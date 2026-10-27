@@ -1,5 +1,9 @@
 import type { Metadata, Viewport } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
+
+/** Police unique de l'application : Inter (interface et chiffres), hébergée avec le site lors du build. */
+const inter = Inter({ subsets: ["latin", "latin-ext"], display: "swap", variable: "--font-sans" });
 
 export const metadata: Metadata = {
   title: "Gestion de Stock | Tableau de bord",
@@ -15,7 +19,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="fr">
+    <html lang="fr" className={inter.variable}>
       <body>{children}</body>
     </html>
   );
