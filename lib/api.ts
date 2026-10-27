@@ -100,3 +100,18 @@ export function idempotencyKey(request: Request): { key: string | null } | { err
   if (!/^[A-Za-z0-9_-]{8,200}$/.test(key)) return { error: fail("Clé d’idempotence invalide.") };
   return { key };
 }
+
+/** Traduit les erreurs levées par record_payment, reverse_payment et settle_pending_payment. */
+export function paymentFailure(error: unknown) {
+  const text = errorText(error);
+  if (/PAYMENT_NOT_FOUND/.test(text)) return fail("Paiement introuvable.", 404);
+  if (/PAYMENT_BAD_STATUS/.test(text)) return fail("Ce paiement ne peut plus être contrepassé.", 409);
+  if (/PAYMENT_METHOD_INVALID/.test(text)) return fail("Mode de paiement invalide ou désactivé.", 400);
+  if (/PAYMENT_DOCUMENT_NOT_FOUND/.test(text)) return fail("Document à régler introuvable.", 404);
+  if (/PAYMENT_DOCUMENT_CLOSED/.test(text)) return fail("Ce document ne peut pas être réglé dans son état actuel.", 409);
+  if (/PAYMENT_PARTY_MISMATCH/.test(text)) return fail("Le document n’appartient pas à ce client ou fournisseur.", 409);
+  if (/PAYMENT_EXCEEDS_DUE/.test(text)) return fail("Le montant dépasse le reste dû sur ce document.", 409);
+  if (/PAYMENT_ALLOCATION_EXCEEDS/.test(text)) return fail("Le total affecté dépasse le montant du paiement.", 400);
+  if (/PAYMENT_INVALID/.test(text)) return fail("Paiement invalide.", 400);
+  return null;
+}

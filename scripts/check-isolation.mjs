@@ -90,9 +90,36 @@ try {
   } else {
     skipped("contrôles de réception d'achat (migration 0013 absente)");
   }
+
+  // --- Paiements (migration 0016) : ignoré si elle n'est pas appliquée
+  if (await exists(sql`SELECT 1 FROM pg_proc WHERE proname = 'record_payment'`)) {
+    const ma = (await sql`SELECT id FROM payment_methods WHERE company_id = ${a}::uuid AND code = 'cash'`)[0]?.id;
+    const mb = (await sql`SELECT id FROM payment_methods WHERE company_id = ${b}::uuid AND code = 'cash'`)[0]?.id;
+    check("modes de paiement créés pour chaque nouvelle entreprise", Boolean(ma && mb));
+    check("paiement de A avec un mode de paiement de B refusé",
+      await rejected(sql`INSERT INTO payments (company_id, payment_number, direction, amount, method_id) VALUES (${a}::uuid, 'P-X', 'in', 10, ${mb}::uuid)`));
+    const custA = (await sql`INSERT INTO customers (company_id, name) VALUES (${a}::uuid, 'Client A') RETURNING id`)[0].id;
+    check("paiement de B pour un client de A refusé",
+      await rejected(sql`INSERT INTO payments (company_id, payment_number, direction, party_type, customer_id, amount, method_id) VALUES (${b}::uuid, 'P-Y', 'in', 'customer', ${custA}::bigint, 10, ${mb}::uuid)`));
+    const saleA = (await sql`INSERT INTO sales (company_id, customer_id, status, total_amount, payment_method) VALUES (${a}::uuid, ${custA}::bigint, 'completed', 100, 'cash') RETURNING id`)[0].id;
+    check("encaissement de B sur une vente de A refusé",
+      await rejected(sql`SELECT record_payment(${b}::uuid, NULL::bigint, 'in', NULL::bigint, NULL::bigint, 50, ${mb}::uuid, NULL::text, NULL::text, ${JSON.stringify([{ documentType: "sale", documentId: Number(saleA), amount: 50 }])}::jsonb)`, /PAYMENT_DOCUMENT_NOT_FOUND/));
+    const paid = (await sql`SELECT record_payment(${a}::uuid, NULL::bigint, 'in', ${custA}::bigint, NULL::bigint, 60, ${ma}::uuid, NULL::text, NULL::text, ${JSON.stringify([{ documentType: "sale", documentId: Number(saleA), amount: 60 }])}::jsonb) AS res`)[0].res;
+    const due = Number((await sql`SELECT due FROM sale_balances WHERE sale_id = ${saleA}::bigint`)[0].due);
+    check("encaissement partiel de A : reste dû 40", due === 40);
+    check("surpaiement refusé",
+      await rejected(sql`SELECT record_payment(${a}::uuid, NULL::bigint, 'in', ${custA}::bigint, NULL::bigint, 50, ${ma}::uuid, NULL::text, NULL::text, ${JSON.stringify([{ documentType: "sale", documentId: Number(saleA), amount: 50 }])}::jsonb)`, /PAYMENT_EXCEEDS_DUE/));
+    check("contrepassation du paiement de A par B refusée",
+      await rejected(sql`SELECT reverse_payment(${b}::uuid, ${paid.id}::uuid, NULL::bigint, 'test')`, /PAYMENT_NOT_FOUND/));
+  } else {
+    skipped("contrôles de paiements (migration 0016 absente)");
+  }
 } finally {
   for (const id of [a, b]) {
     for (const statement of [
+      sql`DELETE FROM payment_allocations WHERE company_id = ${id}::uuid`,
+      sql`DELETE FROM payments WHERE company_id = ${id}::uuid`,
+      sql`DELETE FROM payment_methods WHERE company_id = ${id}::uuid`,
       sql`DELETE FROM goods_receipts WHERE company_id = ${id}::uuid`,
       sql`DELETE FROM idempotency_keys WHERE company_id = ${id}::uuid`,
       sql`DELETE FROM document_sequences WHERE company_id = ${id}::uuid`,

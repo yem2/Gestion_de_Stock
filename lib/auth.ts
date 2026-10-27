@@ -233,3 +233,13 @@ export function newResetToken() {
   const token = randomBytes(32).toString("base64url");
   return { token, hash: hashToken(token) };
 }
+
+/** Version de la photo de profil (horodatage), ou null. Volontairement hors de getSessionUser. */
+export async function getAvatarVersion(userId: number): Promise<number | null> {
+  try {
+    const rows = await getSql()`SELECT (extract(epoch FROM updated_at) * 1000)::bigint AS version FROM user_avatars WHERE user_id = ${userId}::bigint`;
+    return rows[0] ? Number(rows[0].version) : null;
+  } catch {
+    return null;
+  }
+}

@@ -33,7 +33,8 @@ export type Permission =
   | "audit.view" | "settings.manage"
   | "warehouses.view" | "warehouses.write"
   | "transfers.view" | "transfers.write" | "transfers.ship" | "transfers.receive"
-  | "inventory.view" | "inventory.count" | "inventory.approve";
+  | "inventory.view" | "inventory.count" | "inventory.approve"
+  | "payments.view" | "payments.write" | "payments.reverse";
 
 const PERMISSIONS: Record<Permission, readonly Role[]> = {
   "products.write": ["super_admin", "admin", "manager", "storekeeper"],
@@ -63,7 +64,10 @@ const PERMISSIONS: Record<Permission, readonly Role[]> = {
   "transfers.receive": ["super_admin", "admin", "manager", "storekeeper"],
   "inventory.view": ["super_admin", "admin", "manager", "storekeeper"],
   "inventory.count": ["super_admin", "admin", "manager", "storekeeper"],
-  "inventory.approve": ["super_admin", "admin", "manager"]
+  "inventory.approve": ["super_admin", "admin", "manager"],
+  "payments.view": ["super_admin", "admin", "manager", "seller"],
+  "payments.write": ["super_admin", "admin", "seller"],
+  "payments.reverse": ["super_admin", "admin", "manager"]
 };
 
 export function can(role: Role, permission: Permission) {
@@ -102,7 +106,10 @@ export const DB_PERMISSIONS: Record<Permission, readonly string[]> = {
   "transfers.receive": ["inventory.transfer.receive"],
   "inventory.view": ["inventory.count.read"],
   "inventory.count": ["inventory.count"],
-  "inventory.approve": ["inventory.count.approve"]
+  "inventory.approve": ["inventory.count.approve"],
+  "payments.view": ["payments.read"],
+  "payments.write": ["payments.record"],
+  "payments.reverse": ["payments.reverse"]
 };
 
 /** Liste de rôles historiques, étiquetée de la permission visée pour que le serveur vérifie la base. */

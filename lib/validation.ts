@@ -77,6 +77,8 @@ export const PAYMENT_METHODS = ["cash", "orange_money", "mtn_money", "card"] as 
 export const saleSchema = z.object({
   customerId: optionalId,
   paymentMethod: z.enum(PAYMENT_METHODS),
+  /** Montant encaissé à la vente ; absent = totalité. Inférieur au total = vente à crédit (client obligatoire). */
+  amountPaid: z.coerce.number().min(0, "Le montant encaissé ne peut pas être négatif").max(1_000_000_000_000).optional(),
   items: z
     .array(
       z.object({
@@ -209,4 +211,28 @@ export const receiveSchema = z.object({
     .min(1)
     .max(100)
     .optional()
+});
+
+export const paymentSchema = z.object({
+  direction: z.enum(["in", "out"]),
+  customerId: optionalId,
+  supplierId: optionalId,
+  amount: z.coerce.number().positive("Le montant doit être positif").max(1_000_000_000_000),
+  methodId: z.string().uuid("Mode de paiement invalide"),
+  reference: optionalText(120),
+  note: optionalText(300),
+  allocations: z
+    .array(
+      z.object({
+        documentType: z.enum(["sale", "purchase_order"]),
+        documentId: z.coerce.number().int().positive(),
+        amount: z.coerce.number().positive("Le montant affecté doit être positif").max(1_000_000_000_000)
+      })
+    )
+    .max(100)
+    .optional()
+});
+
+export const paymentReverseSchema = z.object({
+  reason: z.string().trim().min(3, "Indiquez le motif de la contrepassation").max(300)
 });

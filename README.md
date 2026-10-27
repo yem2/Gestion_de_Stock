@@ -159,3 +159,21 @@ Migration : `db/0014_rbac_alignment.sql` (à appliquer **avant** de déployer le
 - **Limite** : les boutons des écrans suivent encore le rôle historique ; seuls le menu, l'accès aux pages et toutes les routes API suivent la base. Les rôles personnalisés demandent donc un écran de gestion des rôles (à venir).
 - **Doublons sur les ventes** : l'en-tête `Idempotency-Key` (une clé par ouverture de la fenêtre « Nouvelle vente ») est enregistré dans la même transaction que la vente. Un envoi répété renvoie la vente d'origine, sans second retrait de stock. Les clés ne sont pas encore purgées.
 - **Tests d'isolation** : `node scripts/check-isolation.mjs` (sur une branche de test) vérifie 20 contrôles : entrepôts, transferts, inventaires, codes-barres, clés d'idempotence, numérotation, et les fonctions SQL appelées par une autre entreprise.
+
+## Photo de profil (migration 0015)
+
+Chaque utilisateur gère sa photo dans **Paramètres → Ma photo de profil**. Le navigateur recadre l'image en carré et la réduit à 256×256 (JPEG) avant l'envoi ; le serveur vérifie le type réel du fichier et refuse plus de 200 Ko. L'image est stockée en base (`user_avatars`), visible uniquement par les membres de la même entreprise, et affichée dans le menu, la barre du haut et la liste des utilisateurs. Sans photo, les initiales s'affichent.
+
+## Paiements (migration 0016)
+
+- **Modes de paiement** par entreprise (espèces, Orange Money, MTN Mobile Money, carte, virement), créés automatiquement pour chaque nouvelle entreprise.
+- **Paiements** : encaissements (`in`) et règlements (`out`), numérotés `PAY-AAAA-00001`, affectés à des ventes ou des commandes d'achat (`payment_allocations`). Les paiements non affectés sont conservés séparément. Un paiement validé n'est jamais supprimé : il est **contrepassé** avec son motif.
+- **Soldes calculés depuis les paiements sources** (vues `sale_balances`, `purchase_balances`) : reste dû = total − paiements validés ; les paiements « en attente » (opérateur mobile) sont réservés sans être comptés.
+- **Ventes à crédit** : champ « Montant encaissé » dans la vente ; en dessous du total, un client est obligatoire et le plafond de crédit du client (`customers.credit_limit`, vide = illimité) est vérifié. Annuler une vente contrepasse ses paiements propres ; elle est refusée si un paiement est partagé avec d'autres documents.
+- **API** : `GET/POST /api/payments`, `POST /api/payments/:id/reverse`, `GET /api/payment-methods`, `GET /api/finance/receivables`, `GET /api/finance/payables`. Le POST accepte l'en-tête `Idempotency-Key`.
+- **Opérateurs mobiles** : les fonctions `record_payment(... 'pending', provider, provider_reference)` et `settle_pending_payment` préparent les retours d'Orange Money et de MTN MoMo (référence unique, notification rejouable sans effet). Les connexions aux API des opérateurs restent à brancher.
+- Limite : l'annulation d'une vente contrepasse ses paiements, mais le remboursement effectif (caisse) relève du module Dépenses/Caisse, à venir.
+
+## Typographie
+
+Police unique **Inter** (chargée par `next/font/google` au build, donc hébergée avec le site), chiffres alignés (`tabular-nums`) pour les montants, titres resserrés, rendu net sur tous les écrans. Si le build n'a pas accès à Internet, il retombe sur les polices du système.
