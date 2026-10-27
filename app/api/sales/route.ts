@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 import { authorize, logAudit } from "@/lib/auth";
 import { rolesFor } from "@/lib/roles";
-import { MAIN_WAREHOUSE_STOCK_ERROR, fail, isCheckViolation, isForeignKey, parseBody, serverError } from "@/lib/api";
+import { MAIN_WAREHOUSE_STOCK_ERROR, fail, idempotencyKey, isCheckViolation, isForeignKey, isUnique, parseBody, serverError } from "@/lib/api";
 import { saleSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -39,9 +39,30 @@ export async function POST(request: Request) {
   const body = await parseBody(request, saleSchema);
   if ("error" in body) return body.error;
   const { customerId, paymentMethod, items } = body.data;
+  const idem = idempotencyKey(request);
+  if ("error" in idem) return idem.error;
+  const key = idem.key;
   const itemsJson = JSON.stringify(items.map((item) => ({ productId: item.productId, quantity: item.quantity })));
 
+  const companyId = auth.user.companyId;
+
+  /** Vente déjà enregistrée avec cette clé : on renvoie le même résultat, sans rien refaire. */
+  async function replay() {
+    if (!key) return null;
+    const sql = getSql();
+    const found = await sql`
+      SELECT s.id, s.total_amount AS total
+      FROM idempotency_keys k
+      JOIN sales s ON s.id = k.result_reference::bigint AND s.company_id = k.company_id
+      WHERE k.company_id = ${companyId}::uuid AND k.key = ${key} AND k.operation = 'sale_create'
+    `;
+    return found[0] ?? null;
+  }
+
   try {
+    const previous = await replay();
+    if (previous) return NextResponse.json({ sale: { id: previous.id, total: previous.total }, replayed: true });
+
     const sql = getSql();
     const rows = await sql`
       WITH items AS (
@@ -75,6 +96,10 @@ export async function POST(request: Request) {
         INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
         SELECT ${auth.user.companyId}::uuid, id, 'out', qty, 'Vente #' || (SELECT id FROM sale), ${auth.user.id}::bigint FROM dec
         RETURNING 1
+      ), idem AS (
+        INSERT INTO idempotency_keys (company_id, key, operation, result_reference)
+        SELECT ${auth.user.companyId}::uuid, ${key}::text, 'sale_create', sale.id::text FROM sale WHERE ${key}::text IS NOT NULL
+        RETURNING 1
       )
       SELECT (SELECT id FROM sale) AS id, (SELECT total_amount FROM sale) AS total
     `;
@@ -84,6 +109,11 @@ export async function POST(request: Request) {
     await logAudit(auth.user.id, "sale_create", "sale", Number(rows[0].id), String(rows[0].total));
     return NextResponse.json({ sale: { id: rows[0].id, total: rows[0].total } }, { status: 201 });
   } catch (error) {
+    if (isUnique(error) && key) {
+      // Deux requêtes simultanées avec la même clé : la seconde est annulée en entier, on renvoie la première vente.
+      const previous = await replay().catch(() => null);
+      if (previous) return NextResponse.json({ sale: { id: previous.id, total: previous.total }, replayed: true });
+    }
     if (isForeignKey(error)) return fail("Client invalide.", 400);
     if (isCheckViolation(error)) return fail(MAIN_WAREHOUSE_STOCK_ERROR, 409);
     return serverError("Impossible d’enregistrer la vente.");

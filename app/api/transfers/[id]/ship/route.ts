@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 
 /** L'opération s'exécute dans une fonction SQL unique : tout réussit ou tout est annulé. */
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
-  const auth = await authorize(request, rolesFor("transfers.write"));
+  const auth = await authorize(request, rolesFor("transfers.ship"));
   if ("error" in auth) return auth.error;
   const { id } = await context.params;
   if (!isUuid(id)) return fail("Identifiant invalide.");
