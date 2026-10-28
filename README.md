@@ -177,3 +177,15 @@ Chaque utilisateur gère sa photo dans **Paramètres → Ma photo de profil**. L
 ## Typographie
 
 Police unique **Inter** (chargée par `next/font/google` au build, donc hébergée avec le site), chiffres alignés (`tabular-nums`) pour les montants, titres resserrés, rendu net sur tous les écrans. Si le build n'a pas accès à Internet, il retombe sur les polices du système.
+
+## Paiements mobiles : Orange Money et MTN MoMo (migration 0017)
+
+**Principe.** Depuis *Paiements → Créances clients → Encaisser*, choisir Orange Money ou MTN Mobile Money envoie une vraie demande à l'opérateur. Le paiement est créé « en attente » (le montant est réservé sur la vente, sans être compté) puis devient « validé » ou « échoué » selon l'opérateur.
+- **MTN MoMo** (`requesttopay`) : la demande arrive sur le téléphone du client, qui confirme avec son code secret.
+- **Orange Money** (Web Payment) : le client règle sur la page sécurisée d'Orange (lien affiché dans la fenêtre).
+- **Rien n'est cru sur parole** : les notifications des opérateurs (`/api/payments/webhooks/orange`, `/api/payments/webhooks/mtn`) ne servent que de déclencheur ; le statut final est toujours relu chez l'opérateur. Une notification rejouée ou contradictoire n'a aucun effet sur un paiement déjà réglé.
+- **Aucune demande perdue** : la fenêtre relit le statut toutes les 4 s ; le bouton « Vérifier le statut » existe dans la liste ; un rapprochement quotidien (`/api/cron/reconcile-payments`, protégé par `CRON_SECRET`) règle les paiements restés en attente, et une demande sans réponse après 60 min expire. Le cron est quotidien pour rester compatible avec le plan gratuit de Vercel ; passez-le à `*/15 * * * *` dans `vercel.json` avec un plan Pro.
+- **Doublons** : référence unique par demande, clé d'idempotence, une seule demande possible par solde dû.
+- **Non configuré** : tant que les variables ne sont pas renseignées (voir `.env.example`), l'encaissement Orange/MTN reste possible en mode manuel (déjà confirmé), avec un message explicite. `GET /api/payments/mobile/config` indique les noms des variables manquantes, jamais leurs valeurs.
+- **À faire pour passer en production** : obtenir les accès chez MTN MoMo Developer (produit Collections, puis activation Cameroun) et chez Orange Developer / Orange Money (clé marchand), renseigner les variables dans Vercel, tester d'abord en `sandbox` (MTN : numéros de test fournis par MTN, devise EUR ; Orange : devise OUV), puis passer `*_ENV=production`.
+- **Limites** : encaissement des ventes uniquement (pas encore de paiement sortant vers les fournisseurs par mobile money) ; ces connexions n'ont pas pu être testées ici sans accès réseau ni clés — elles suivent la documentation des opérateurs et doivent être validées en sandbox.

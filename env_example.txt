@@ -1,0 +1,24 @@
+# Copiez ces noms dans Vercel : Settings > Environment Variables. Ne mettez JAMAIS les valeurs dans le dépôt.
+
+# --- Base de données et application (déjà configurées) ---
+# DATABASE_URL=
+# APP_URL=https://votre-application.vercel.app      # adresse publique : liens de retour et notifications des opérateurs
+
+# --- MTN Mobile Money (Collection API) : https://momodeveloper.mtn.com ---
+# MTN_MOMO_ENV=sandbox                  # sandbox (essais) ou production
+# MTN_MOMO_SUBSCRIPTION_KEY=            # clé d'abonnement du produit « Collections »
+# MTN_MOMO_API_USER=                    # identifiant API (UUID) créé pour votre compte
+# MTN_MOMO_API_KEY=                     # clé API associée
+# MTN_MOMO_TARGET_ENV=                  # production Cameroun : mtncameroon (laisser vide en sandbox)
+# MTN_MOMO_CURRENCY=                    # laisser vide : EUR en sandbox, XAF en production
+# MTN_MOMO_CALLBACK_URL=                # facultatif : https://votre-application.vercel.app/api/payments/webhooks/mtn
+
+# --- Orange Money (Web Payment) : https://developer.orange.com ---
+# ORANGE_MONEY_ENV=sandbox              # sandbox (essais) ou production
+# ORANGE_MONEY_CLIENT_ID=               # Consumer Key de l'application Orange
+# ORANGE_MONEY_CLIENT_SECRET=           # Consumer Secret
+# ORANGE_MONEY_MERCHANT_KEY=            # clé marchand Orange Money
+# ORANGE_MONEY_COUNTRY=cm               # code pays de l'API de production
+
+# --- Rapprochement quotidien des paiements en attente ---
+# CRON_SECRET=                          # chaîne aléatoire longue ; Vercel l'envoie automatiquement au cron
