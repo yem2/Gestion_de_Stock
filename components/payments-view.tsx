@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, useApi } from "@/lib/client";
 import { dateTime, money } from "@/lib/format";
 import { can, type Role } from "@/lib/roles";
@@ -9,11 +9,12 @@ import { Alert, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui
 type Status = "pending" | "posted" | "failed" | "reversed";
 type Payment = {
   id: string; number: string; direction: "in" | "out"; status: Status; amount: string; reference: string | null;
-  paidAt: string; method: string; party: string | null; createdBy: string | null; reversalReason: string | null; allocated: string;
+  paidAt: string; method: string; provider?: string | null; party: string | null; createdBy: string | null; reversalReason: string | null; allocated: string;
 };
 type Receivable = { id: string; customerId: string | null; customer: string | null; creditLimit: string | null; total: string; paid: string; pending: string; due: string; createdAt: string };
 type Payable = { id: string; orderNumber: string | null; supplierId: string | null; supplier: string | null; total: string; paid: string; pending: string; due: string; status: string; createdAt: string };
 type Method = { id: string; code: string; name: string; type: string };
+type ProviderConfig = { configured: boolean; environment: string; missing: string[] };
 type Target = { kind: "sale" | "purchase_order"; id: string; label: string; party: string; partyId: string | null; due: number };
 
 const STATUS: Record<Status, { label: string; badge: string }> = {
@@ -31,7 +32,46 @@ function PayModal({ target, methods, onClose, onDone }: { target: Target; method
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [idemKey] = useState(() => crypto.randomUUID());
+  const [phone, setPhone] = useState("");
+  const [waiting, setWaiting] = useState<{ id: string; number: string; paymentUrl: string | null } | null>(null);
+  const [providers, setProviders] = useState<Record<string, ProviderConfig> | null>(null);
   const inbound = target.kind === "sale";
+  const code = methods.find((m) => m.id === methodId)?.code ?? "";
+  const isMobile = inbound && (code === "orange_money" || code === "mtn_money");
+  const connected = isMobile && Boolean(providers?.[code]?.configured);
+
+  useEffect(() => {
+    if (!inbound) return;
+    api<{ providers: Record<string, ProviderConfig> }>("/api/payments/mobile/config")
+      .then((data) => setProviders(data.providers))
+      .catch(() => setProviders({}));
+  }, [inbound]);
+
+  // Attente de la confirmation de l'opérateur : on relit le statut toutes les 4 secondes.
+  useEffect(() => {
+    if (!waiting) return;
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const result = await api<{ status: string; error: string | null }>(`/api/payments/mobile/${waiting.id}/status`);
+        if (stopped) return;
+        if (result.status === "posted") onDone(`Paiement ${waiting.number} confirmé par l’opérateur.`);
+        else if (result.status === "failed" || result.status === "reversed") {
+          setWaiting(null);
+          setError(result.error ?? "Le paiement n’a pas abouti (refusé, annulé ou expiré).");
+        }
+      } catch {
+        // erreur réseau passagère : on réessaie au prochain passage
+      }
+    };
+    const timer = setInterval(tick, 4000);
+    void tick();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waiting?.id]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,6 +79,22 @@ function PayModal({ target, methods, onClose, onDone }: { target: Target; method
     setSaving(true);
     try {
       const value = Number(amount);
+      if (connected) {
+        const started = await api<{ payment: { id: string; number: string; paymentUrl: string | null } }>("/api/payments/mobile", {
+          method: "POST",
+          headers: { "Idempotency-Key": idemKey },
+          body: JSON.stringify({
+            provider: code,
+            phone: code === "mtn_money" ? phone : undefined,
+            customerId: target.partyId ?? undefined,
+            amount: value,
+            reference,
+            allocations: [{ documentType: "sale", documentId: Number(target.id), amount: value }]
+          })
+        });
+        setWaiting(started.payment);
+        return;
+      }
       const result = await api<{ payment: { number: string } }>("/api/payments", {
         method: "POST",
         headers: { "Idempotency-Key": idemKey },
@@ -61,6 +117,27 @@ function PayModal({ target, methods, onClose, onDone }: { target: Target; method
     }
   }
 
+  if (waiting) {
+    return (
+      <Modal title="En attente de l’opérateur" onClose={onClose}>
+        <p className="hint" style={{ marginBottom: 12 }}>
+          {code === "mtn_money"
+            ? "La demande a été envoyée sur le téléphone du client. Il doit la confirmer avec son code secret MTN MoMo."
+            : "Le client règle sur la page sécurisée d’Orange Money. Ce message disparaît dès que le paiement est confirmé."}
+        </p>
+        {waiting.paymentUrl && (
+          <p style={{ marginBottom: 12 }}>
+            <a className="btn btn-primary" href={waiting.paymentUrl} target="_blank" rel="noopener noreferrer">Ouvrir la page de paiement Orange Money</a>
+          </p>
+        )}
+        <p className="hint">Paiement {waiting.number} · {money(Number(amount))} · vérification automatique toutes les 4 secondes.</p>
+        <div className="form-actions">
+          <button type="button" className="btn" onClick={onClose}>Fermer (le paiement reste en attente)</button>
+        </div>
+      </Modal>
+    );
+  }
+
   return (
     <Modal title={inbound ? "Encaisser" : "Régler"} onClose={onClose}>
       <form onSubmit={submit}>
@@ -73,12 +150,18 @@ function PayModal({ target, methods, onClose, onDone }: { target: Target; method
               {methods.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
           </Field>
+          {connected && code === "mtn_money" && (
+            <Field label="Téléphone du client (MTN)" span><input type="tel" required inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="6XX XX XX XX" /></Field>
+          )}
+          {isMobile && providers && !connected && (
+            <p className="hint" style={{ gridColumn: "1 / -1" }}>Cet opérateur n’est pas encore connecté : le paiement sera enregistré comme déjà confirmé (confirmation manuelle).</p>
+          )}
           <Field label="Référence (facultatif)" span><input value={reference} maxLength={120} onChange={(e) => setReference(e.target.value)} placeholder="N° de transaction, de chèque…" /></Field>
           <Field label="Note (facultatif)" span><input value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} /></Field>
         </div>
         <div className="form-actions">
           <button type="button" className="btn" onClick={onClose}>Annuler</button>
-          <button type="submit" className="btn btn-primary" disabled={saving || !methodId}>{saving ? "Enregistrement…" : inbound ? "Encaisser" : "Régler"}</button>
+          <button type="submit" className="btn btn-primary" disabled={saving || !methodId}>{saving ? "Enregistrement…" : connected ? "Envoyer la demande de paiement" : inbound ? "Encaisser" : "Régler"}</button>
         </div>
       </form>
     </Modal>
@@ -102,6 +185,17 @@ export default function PaymentsView({ role }: { role: Role }) {
 
   async function reloadAll() {
     await Promise.all([payments.reload(), receivables.reload(), payables.reload()]);
+  }
+
+  async function refreshPending(payment: Payment) {
+    setError("");
+    try {
+      const result = await api<{ status: string }>(`/api/payments/mobile/${payment.id}/status`);
+      setNotice(result.status === "posted" ? `Paiement ${payment.number} confirmé.` : result.status === "pending" ? `Paiement ${payment.number} toujours en attente chez l’opérateur.` : `Paiement ${payment.number} : non abouti.`);
+      await reloadAll();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Vérification impossible.");
+    }
   }
 
   async function reverse(payment: Payment) {
@@ -149,7 +243,10 @@ export default function PaymentsView({ role }: { role: Role }) {
                     <td data-label="Mode">{p.method}{p.reference ? ` · ${p.reference}` : ""}</td>
                     <td data-label="Montant" className="num"><strong>{money(p.amount)}</strong></td>
                     <td data-label="Statut"><span className={`badge ${STATUS[p.status].badge}`}>{STATUS[p.status].label}</span>{p.reversalReason && <small> {p.reversalReason}</small>}</td>
-                    <td className="actions">{canReverse && p.status === "posted" && <button type="button" className="btn btn-sm btn-danger" onClick={() => reverse(p)}>Contrepasser</button>}</td>
+                    <td className="actions">
+                      {canWrite && p.status === "pending" && p.provider && <button type="button" className="btn btn-sm" onClick={() => refreshPending(p)}>Vérifier le statut</button>}
+                      {canReverse && p.status === "posted" && <button type="button" className="btn btn-sm btn-danger" onClick={() => reverse(p)}>Contrepasser</button>}
+                    </td>
                   </tr>
                 ))}
               </tbody>

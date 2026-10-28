@@ -236,3 +236,21 @@ export const paymentSchema = z.object({
 export const paymentReverseSchema = z.object({
   reason: z.string().trim().min(3, "Indiquez le motif de la contrepassation").max(300)
 });
+
+export const mobilePaymentSchema = z.object({
+  provider: z.enum(["orange_money", "mtn_money"]),
+  phone: z.string().trim().max(30).optional(),
+  customerId: optionalId,
+  amount: z.coerce.number().positive("Le montant doit être positif").max(1_000_000_000_000),
+  reference: optionalText(120),
+  allocations: z
+    .array(
+      z.object({
+        documentType: z.literal("sale"),
+        documentId: z.coerce.number().int().positive(),
+        amount: z.coerce.number().positive("Le montant affecté doit être positif").max(1_000_000_000_000)
+      })
+    )
+    .min(1, "Choisissez la vente à encaisser")
+    .max(20)
+});
