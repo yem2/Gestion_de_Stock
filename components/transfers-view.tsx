@@ -34,13 +34,19 @@ function NewTransfer({ onClose, onSaved }: { onClose: () => void; onSaved: (mess
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
+  function changeSource(id: string) {
+    setSourceId(id);
     setLines([{ productId: "", quantity: "1" }]);
     setStock([]);
+  }
+
+  useEffect(() => {
     if (!sourceId) return;
+    let alive = true;
     api<{ stock: StockLine[] }>(`/api/warehouses/${sourceId}/stock`)
-      .then((data) => setStock(data.stock))
-      .catch((e) => setError(e instanceof Error ? e.message : "Chargement du stock impossible."));
+      .then((data) => { if (alive) setStock(data.stock); })
+      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : "Chargement du stock impossible."); });
+    return () => { alive = false; };
   }, [sourceId]);
 
   function setLine(index: number, patch: Partial<{ productId: string; quantity: string }>) {
@@ -77,7 +83,7 @@ function NewTransfer({ onClose, onSaved }: { onClose: () => void; onSaved: (mess
         {error && <Alert>{error}</Alert>}
         <div className="form-grid" style={{ marginBottom: 14 }}>
           <Field label="Entrepôt d’origine" span>
-            <select value={sourceId} onChange={(e) => setSourceId(e.target.value)} required>
+            <select value={sourceId} onChange={(e) => changeSource(e.target.value)} required>
               <option value="">Choisir…</option>
               {warehouses.map((w) => <option key={w.id} value={w.id} disabled={w.id === destinationId}>{w.name} ({w.code})</option>)}
             </select>

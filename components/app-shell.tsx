@@ -32,13 +32,12 @@ const NAV: { href: string; label: string; icon: typeof Package; permission?: Per
 
 export default function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {
   const pathname = usePathname();
-  const [open, setOpen] = useState(false);
+  // Le menu mobile se referme tout seul à chaque changement de page (l'état est lié au chemin courant).
+  const [openPath, setOpenPath] = useState<string | null>(null);
+  const open = openPath === pathname;
+  const setOpen = (value: boolean) => setOpenPath(value ? pathname : null);
   const items = NAV.filter((item) => !item.permission || user.allowed.includes(item.permission));
   const current = items.find((item) => (item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)));
-
-  useEffect(() => {
-    setOpen(false);
-  }, [pathname]);
 
   useEffect(() => {
     document.body.classList.toggle("no-scroll", open);
