@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0c0c0e">
+  <title>Hors ligne | Gestion de Stock</title>
+  <style>
+    :root{color-scheme:light}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:24px;background:#f4f5f8;color:#15171c;
+      font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:1rem;line-height:1.5;-webkit-font-smoothing:antialiased}
+    main{width:min(100%,420px);text-align:center;background:#fff;border:1px solid #e6e8ee;border-radius:18px;padding:32px 24px;box-shadow:0 10px 30px rgba(0,0,0,.06)}
+    img{width:72px;height:72px;border-radius:18px}
+    h1{margin:16px 0 8px;font-size:1.375rem;font-weight:600;letter-spacing:-.015em;line-height:1.25}
+    p{margin:0 0 20px;color:#5b6270}
+    button{min-height:44px;padding:8px 22px;border:0;border-radius:11px;background:#d71920;color:#fff;font:inherit;font-weight:500;cursor:pointer}
+    button:focus-visible{outline:3px solid #15171c;outline-offset:2px}
+  </style>
+</head>
+<body>
+  <main>
+    <img src="/icons/icon-192.png" alt="" width="72" height="72">
+    <h1>Vous êtes hors ligne</h1>
+    <p>Gestion de Stock a besoin d’une connexion Internet pour afficher et enregistrer vos données. Vérifiez votre réseau, puis réessayez.</p>
+    <button type="button" onclick="location.reload()">Réessayer</button>
+  </main>
+  <script>window.addEventListener("online", function () { location.reload(); });</script>
+</body>
+</html>
