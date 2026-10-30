@@ -6,7 +6,7 @@ import { type Permission, type Role } from "@/lib/roles";
 /** Permissions qui déterminent les entrées visibles du menu. */
 const NAV_PERMISSIONS: Permission[] = [
   "movements.view", "suppliers.view", "customers.view", "sales.view", "purchases.view", "reports.view",
-  "users.manage", "audit.view", "settings.manage", "warehouses.view", "transfers.view", "inventory.view", "payments.view"
+  "users.manage", "audit.view", "settings.manage", "warehouses.view", "transfers.view", "inventory.view", "payments.view", "finance.view"
 ];
 
 /** Identité de l'utilisateur connecté, transmise aux pages. */

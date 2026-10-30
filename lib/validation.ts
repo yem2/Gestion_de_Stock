@@ -6,7 +6,9 @@ export const productInputSchema = z.object({
   category: z.string().trim().max(100).default("Général"),
   quantity: z.coerce.number().int().min(0).max(100000000),
   unitPrice: z.coerce.number().min(0).max(100000000000),
-  minQuantity: z.coerce.number().int().min(0).max(100000000).default(0)
+  minQuantity: z.coerce.number().int().min(0).max(100000000).default(0),
+  /** Coût d'achat moyen initial (CUMP). Modifiable seulement tant qu'il est inconnu ; ensuite il suit les réceptions d'achat. */
+  avgCost: z.preprocess((v) => (v === "" || v === null || v === undefined ? undefined : v), z.coerce.number().min(0).max(100000000000).optional())
 });
 
 export type ProductInput = z.infer<typeof productInputSchema>;
@@ -253,4 +255,18 @@ export const mobilePaymentSchema = z.object({
     )
     .min(1, "Choisissez la vente à encaisser")
     .max(20)
+});
+
+export const expenseSchema = z.object({
+  categoryId: z.string().uuid("Catégorie invalide"),
+  amount: z.coerce.number().positive("Le montant doit être positif").max(1_000_000_000_000),
+  description: z.string().trim().min(2, "Décrivez la dépense").max(300),
+  expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date invalide").optional(),
+  methodId: z.string().uuid("Mode de paiement invalide"),
+  /** Approuver et payer tout de suite (réservé à ceux qui ont le droit d'approuver). */
+  approve: z.boolean().optional()
+});
+
+export const expenseCloseSchema = z.object({
+  reason: z.string().trim().min(3, "Indiquez le motif").max(300)
 });

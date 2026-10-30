@@ -7,7 +7,7 @@ import { money } from "@/lib/format";
 import { can, type Role } from "@/lib/roles";
 import { Alert, Empty, Field, Loading, Modal, PageHeader, StockBadge } from "@/components/ui";
 
-type Product = { id: string; sku: string; name: string; category: string; quantity: number; unitPrice: string; minQuantity: number };
+type Product = { id: string; sku: string; name: string; category: string; quantity: number; unitPrice: string; minQuantity: number; avgCost?: string };
 
 type Barcode = { id: string; barcode: string };
 
@@ -189,6 +189,11 @@ export default function ProductsView({ role }: { role: Role }) {
               <Field label="Référence"><input name="sku" required defaultValue={current?.sku} /></Field>
               <Field label="Catégorie"><input name="category" defaultValue={current?.category ?? "Général"} /></Field>
               <Field label="Prix unitaire (FCFA)"><input name="unitPrice" type="number" min={0} step="1" inputMode="numeric" required defaultValue={current ? Number(current.unitPrice) : 0} /></Field>
+              {!current || Number(current.avgCost ?? 0) === 0 ? (
+                <Field label="Coût d’achat moyen (FCFA)"><input name="avgCost" type="number" min={0} step="1" inputMode="numeric" placeholder="Pour calculer vos marges" /></Field>
+              ) : (
+                <Field label="Coût moyen pondéré (calcul automatique)"><input value={money(Number(current.avgCost))} readOnly aria-readonly="true" /></Field>
+              )}
               <Field label="Seuil d’alerte"><input name="minQuantity" type="number" min={0} step="1" inputMode="numeric" defaultValue={current?.minQuantity ?? 0} /></Field>
               {editing === "new" ? (
                 <Field label="Stock initial" span><input name="quantity" type="number" min={0} step="1" inputMode="numeric" defaultValue={0} /></Field>

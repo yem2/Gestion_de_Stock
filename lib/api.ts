@@ -115,3 +115,13 @@ export function paymentFailure(error: unknown) {
   if (/PAYMENT_INVALID/.test(text)) return fail("Paiement invalide.", 400);
   return null;
 }
+
+/** Traduit les erreurs levées par create_expense, approve_expense et close_expense. */
+export function expenseFailure(error: unknown) {
+  const text = errorText(error);
+  if (/EXPENSE_NOT_FOUND/.test(text)) return fail("Dépense introuvable.", 404);
+  if (/EXPENSE_BAD_STATUS/.test(text)) return fail("Cette dépense n’est pas dans un état qui permet cette action.", 409);
+  if (/EXPENSE_INVALID/.test(text)) return fail("Dépense invalide (montant ou catégorie).", 400);
+  if (/PAYMENT_METHOD_INVALID/.test(text)) return fail("Mode de paiement invalide ou désactivé.", 400);
+  return paymentFailure(error);
+}

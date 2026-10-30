@@ -9,7 +9,7 @@ function initialsOf(name: string) {
 /** Photo de profil, ou initiales si l'utilisateur n'en a pas (ou si elle ne se charge pas). */
 export default function Avatar({ userId, name, version, size = 38 }: { userId: string | number; name: string; version?: number | string | null; size?: number }) {
   const [failed, setFailed] = useState(false);
-  const style = { width: size, height: size, fontSize: Math.max(12, Math.round(size * 0.36)) };
+  const style = { width: size, height: size, fontSize: Math.max(11, Math.round(size * 0.36)) };
   if (version && !failed) {
     return (
       // eslint-disable-next-line @next/next/no-img-element

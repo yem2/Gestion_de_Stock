@@ -20,24 +20,26 @@ export async function api<T = unknown>(url: string, init?: RequestInit): Promise
   return data as T;
 }
 
-type ApiState<T> = { key: string; data: T | null; error: string };
-
-/** Charge une URL JSON. Pendant un rechargement, `loading` est vrai et les anciennes données restent affichées. */
 export function useApi<T>(url: string) {
-  const [tick, setTick] = useState(0);
-  const key = `${url}|${tick}`;
-  const [state, setState] = useState<ApiState<T>>({ key: "", data: null, error: "" });
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setData(await api<T>(url));
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Connexion impossible.");
+    } finally {
+      setLoading(false);
+    }
+  }, [url]);
 
   useEffect(() => {
-    let alive = true;
-    api<T>(url)
-      .then((data) => { if (alive) setState({ key, data, error: "" }); })
-      .catch((e: unknown) => {
-        if (alive) setState((previous) => ({ key, data: previous.data, error: e instanceof Error ? e.message : "Connexion impossible." }));
-      });
-    return () => { alive = false; };
-  }, [url, key]);
+    void load();
+  }, [load]);
 
-  const reload = useCallback(() => setTick((value) => value + 1), []);
-  return { data: state.data, error: state.error, loading: state.key !== key, reload };
+  return { data, error, loading, reload: load };
 }
