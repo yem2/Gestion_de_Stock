@@ -5,11 +5,11 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
-  Settings, ShoppingCart, Truck, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Wallet, Warehouse, X
+  Settings, ShoppingCart, Truck, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Landmark, Wallet, Warehouse, X
 } from "lucide-react";
 import { type Permission, type Role } from "@/lib/roles";
 import Avatar from "@/components/avatar";
-import InstallMenuButton from "@/components/install-menu-button";
+import NotificationBell from "@/components/notification-bell";
 
 type ShellUser = { id: number; avatarVersion: number | null; name: string; role: Role; roleLabel: string; allowed: Permission[] };
 
@@ -21,6 +21,7 @@ const NAV: { href: string; label: string; icon: typeof Package; permission?: Per
   { href: "/transferts", label: "Transferts", icon: ArrowRightLeft, permission: "transfers.view" },
   { href: "/inventaires", label: "Inventaires", icon: ClipboardCheck, permission: "inventory.view" },
   { href: "/paiements", label: "Paiements", icon: Wallet, permission: "payments.view" },
+  { href: "/finance", label: "Finance", icon: Landmark, permission: "finance.view" },
   { href: "/ventes", label: "Ventes", icon: ShoppingCart, permission: "sales.view" },
   { href: "/achats", label: "Achats", icon: ClipboardList, permission: "purchases.view" },
   { href: "/clients", label: "Clients", icon: Users, permission: "customers.view" },
@@ -33,12 +34,13 @@ const NAV: { href: string; label: string; icon: typeof Package; permission?: Per
 
 export default function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {
   const pathname = usePathname();
-  // Le menu mobile se referme tout seul à chaque changement de page (l'état est lié au chemin courant).
-  const [openPath, setOpenPath] = useState<string | null>(null);
-  const open = openPath === pathname;
-  const setOpen = (value: boolean) => setOpenPath(value ? pathname : null);
+  const [open, setOpen] = useState(false);
   const items = NAV.filter((item) => !item.permission || user.allowed.includes(item.permission));
   const current = items.find((item) => (item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)));
+
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     document.body.classList.toggle("no-scroll", open);
@@ -72,7 +74,6 @@ export default function AppShell({ user, children }: { user: ShellUser; children
             );
           })}
         </nav>
-        <InstallMenuButton />
         <div className="user-card">
           <Avatar userId={user.id} name={user.name} version={user.avatarVersion} />
           <div className="user-info"><strong>{user.name}</strong><span>{user.roleLabel}</span></div>
@@ -84,6 +85,7 @@ export default function AppShell({ user, children }: { user: ShellUser; children
         <header className="topbar">
           <button type="button" className="icon-btn menu-btn" onClick={() => setOpen(true)} aria-label="Ouvrir le menu"><Menu size={22} /></button>
           <h2 className="topbar-title">{current?.label ?? "Gestion de Stock"}</h2>
+          <NotificationBell />
           <div className="topbar-user"><Avatar userId={user.id} name={user.name} version={user.avatarVersion} size={26} /><span>{user.name}</span></div>
         </header>
         <main className="content">{children}</main>

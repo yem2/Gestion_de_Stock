@@ -1,4 +1,5 @@
 import { getSql } from "@/lib/db";
+import { notifyPermission } from "@/lib/notify";
 import { mtnCheck, orangeCheck, ProviderError, type MobileProvider, type RemoteStatus } from "@/lib/payments/mobile";
 
 export type SessionRow = {
@@ -82,5 +83,12 @@ export async function refreshSession(session: SessionRow): Promise<RemoteStatus>
     FROM r WHERE s.id = ${session.id}::uuid
     RETURNING r.st AS "paymentStatus"
   `;
+  if (!success) {
+    await notifyPermission(session.companyId, "payments.record", {
+      type: "payment_failed", title: "Paiement mobile non abouti",
+      body: `Un encaissement ${session.provider === "mtn_money" ? "MTN MoMo" : "Orange Money"} n’a pas abouti (${status === "expired" ? "expiré" : "refusé ou annulé"}).`,
+      link: "/paiements", severity: "warning", dedupeKey: `pay:${session.paymentId}`
+    });
+  }
   return success && rows[0]?.paymentStatus === "posted" ? "success" : status === "success" ? "failed" : status;
 }

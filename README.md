@@ -202,3 +202,12 @@ Police unique **Inter** (chargée par `next/font/google` au build, donc héberg�
 ## Hiérarchie typographique
 
 Police Inter, trois graisses seulement : **400** pour le texte courant, **500** pour les libellés, boutons, menu, badges, titres de cartes et chiffres clés, **600** uniquement pour le titre de page et le montant du total. Aucun 700 ni 800.
+
+## Notifications et alertes de stock (migration 0019)
+
+- **Cloche** dans la barre du haut (compteur de non lues, aperçu, lecture au clic, rafraîchie toutes les 60 s) et page **Notifications** (toutes / non lues, marquer lue). Chaque utilisateur ne voit et ne modifie que les siennes.
+- **Alertes de stock automatiques** (déclencheur en base, donc valables pour toute opération qui change le stock) : « Stock bas » quand un produit passe sous son seuil d'alerte, « Rupture » quand il tombe à zéro. Destinataires : tous les utilisateurs actifs ayant le droit `products.update`. Pas de doublon tant qu'une alerte n'est pas lue, et elles se marquent lues d'elles-mêmes quand le stock repasse au-dessus du seuil.
+- **Demandes à traiter** : commande d'achat soumise (`purchases.approve`), dépense en attente (`expenses.approve`), inventaire soumis (`inventory.count.approve`), encaissement mobile non abouti (`payments.record`).
+- **Fiabilité (7.9)** : une erreur de notification ne fait jamais échouer la vente, la réception ou le paiement qui l'a provoquée (le déclencheur et `notifyPermission` absorbent toute erreur).
+- **Canaux externes (e-mail, SMS, WhatsApp)** : pas encore branchés. Les tables `notification_deliveries` et `outbox_events` (0010) sont prêtes ; il reste à choisir les services d'envoi et à écrire les adaptateurs.
+- Limites : pas encore de préférences par utilisateur (choix des types et des canaux) ni de rappel périodique des alertes non lues.
