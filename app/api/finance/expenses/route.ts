@@ -4,6 +4,7 @@ import { authorize, logAudit, userCan } from "@/lib/auth";
 import { rolesFor } from "@/lib/roles";
 import { expenseFailure, fail, idempotencyKey, isForeignKey, isUnique, parseBody, serverError } from "@/lib/api";
 import { expenseSchema } from "@/lib/validation";
+import { notifyPermission } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -68,6 +69,9 @@ export async function POST(request: Request) {
       SELECT res FROM r`;
     const res = rows[0].res as { id: string; number: string; status: string };
     await logAudit(auth.user.id, "expense_create", "expense", res.id, `${res.number} ${d.amount}`);
+    if (res.status === "pending") {
+      await notifyPermission(companyId, "expenses.approve", { type: "expense_approval", title: "Dépense à approuver", body: `${res.number} · ${new Intl.NumberFormat("fr-FR").format(Math.round(d.amount))} FCFA : ${d.description}`, link: "/finance", severity: "info", dedupeKey: `exp:${res.id}` });
+    }
     return NextResponse.json({ expense: res }, { status: 201 });
   } catch (error) {
     if (isUnique(error) && key) {

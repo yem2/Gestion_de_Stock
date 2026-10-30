@@ -3,6 +3,7 @@ import { getSql } from "@/lib/db";
 import { authorize, logAudit } from "@/lib/auth";
 import { rolesFor } from "@/lib/roles";
 import { fail, parseId, serverError } from "@/lib/api";
+import { notifyPermission } from "@/lib/notify";
 
 export const runtime = "nodejs";
 
@@ -20,6 +21,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     `;
     if (!rows[0]) return fail("Commande introuvable ou déjà traitée.", 409);
     await logAudit(auth.user.id, "purchase_submit", "purchase", id);
+    await notifyPermission(auth.user.companyId, "purchases.approve", { type: "purchase_approval", title: "Commande à approuver", body: `La commande #${id} attend votre approbation.`, link: "/achats", severity: "info", dedupeKey: `po:${id}` });
     return NextResponse.json({ ok: true });
   } catch {
     return serverError("Impossible de soumettre la commande.");
