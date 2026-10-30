@@ -28,7 +28,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/.en
 +# CRON_SECRET=                          # chaîne aléatoire longue ; Vercel l'envoie automatiquement au cron
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/README.md Gestion_de_Stock-main/README.md
 --- orig/Gestion_de_Stock-main/README.md	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/README.md	2026-10-28 01:46:19.350620945 +0000
++++ Gestion_de_Stock-main/README.md	2026-10-29 14:29:58.780863312 +0000
 @@ -28,7 +28,7 @@
  2. Installe les dépendances : `npm install`
  3. Copie `.env.example` vers `.env.local`.
@@ -38,7 +38,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/REA
  6. Lance `npm run dev`, puis ouvre `http://localhost:3000`.
  
  Sans `DATABASE_URL` et la migration, l'interface s'affiche mais les données et l'ajout de produits ne fonctionnent pas.
-@@ -86,3 +86,106 @@
+@@ -86,3 +86,119 @@
  - **Achats** : commandes aux fournisseurs (articles, quantités, coût unitaire). « Réceptionner » passe la commande à *reçue*, augmente le stock et trace les entrées dans la même requête SQL ; une commande ne peut être reçue qu'une fois. Annulation possible tant qu'elle n'est pas reçue.
  - **Journal d'activité** (administrateurs) : les 300 dernières actions (connexions, produits, ventes, achats, exports, paramètres…) avec filtre.
  - **Paramètres** : changement de son propre mot de passe (ancien mot de passe exigé, autres sessions fermées) et informations de l'entreprise (nom, adresse, téléphone, message) reprises sur les reçus de vente.
@@ -145,6 +145,19 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/REA
 +- **Non configuré** : tant que les variables ne sont pas renseignées (voir `.env.example`), l'encaissement Orange/MTN reste possible en mode manuel (déjà confirmé), avec un message explicite. `GET /api/payments/mobile/config` indique les noms des variables manquantes, jamais leurs valeurs.
 +- **À faire pour passer en production** : obtenir les accès chez MTN MoMo Developer (produit Collections, puis activation Cameroun) et chez Orange Developer / Orange Money (clé marchand), renseigner les variables dans Vercel, tester d'abord en `sandbox` (MTN : numéros de test fournis par MTN, devise EUR ; Orange : devise OUV), puis passer `*_ENV=production`.
 +- **Limites** : encaissement des ventes uniquement (pas encore de paiement sortant vers les fournisseurs par mobile money) ; ces connexions n'ont pas pu être testées ici sans accès réseau ni clés — elles suivent la documentation des opérateurs et doivent être validées en sandbox.
++
++## Valorisation CUMP, marges, dépenses et trésorerie (migration 0018)
++
++- **CUMP** (coût unitaire moyen pondéré) : à chaque réception d'achat, nouveau coût moyen = (stock avant × coût moyen + quantité reçue × coût d'achat) ÷ (stock avant + quantité reçue). Si le coût moyen d'un produit est encore inconnu, le coût de la première réception est adopté. Le coût moyen d'un produit sans historique peut être saisi une fois dans la fiche produit ; ensuite il est calculé automatiquement.
++- **Marges** : chaque ligne de vente garde le coût moyen du moment (`sale_items.unit_cost`), donc les marges passées ne bougent plus. Les ventes sans coût connu sont exclues du calcul et signalées à part (jamais comptées comme 100 % de marge).
++- **Dépenses** : catégories par entreprise, numéros `DEP-AAAA-00001`. Une dépense est « à approuver » puis « payée » (l'approbation crée le règlement et fait baisser la trésorerie dans la même transaction), ou « rejetée ». Annuler une dépense payée contrepasse son règlement.
++- **Trésorerie** : comptes (caisse, Orange Money, MTN Mobile Money, banque) rattachés aux modes de paiement. Solde = solde d'ouverture + encaissements validés − règlements validés (les paiements en attente ou contrepassés ne comptent pas). Le solde d'ouverture se règle depuis Finance → Trésorerie.
++- **Synthèse financière** (`GET /api/finance/summary`) : chiffre d'affaires, marge brute, dépenses, résultat d'exploitation, créances, dettes, valeur du stock au coût, produits les plus rentables.
++- **Limites** : les entrées de stock saisies à la main (hors achats) ne modifient pas le CUMP ; les frais d'approvisionnement ne sont pas encore intégrés au coût ; la clôture de caisse (comptage de fin de journée) reste à faire.
++
++## Hiérarchie typographique
++
++Police Inter, trois graisses seulement : **400** pour le texte courant, **500** pour les libellés, boutons, menu, badges, titres de cartes et chiffres clés, **600** uniquement pour le titre de page et le montant du total. Aucun 700 ni 800.
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/account/avatar/route.ts Gestion_de_Stock-main/app/api/account/avatar/route.ts
 --- orig/Gestion_de_Stock-main/app/api/account/avatar/route.ts	1970-01-01 00:00:00.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/account/avatar/route.ts	2026-10-26 19:40:49.103376530 +0000
@@ -335,6 +348,232 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
        RETURNING id, name, phone, email, created_at AS "createdAt"
      `;
      await logAudit(auth.user.id, "customer_create", "customer", Number(rows[0].id));
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/finance/accounts/[id]/route.ts Gestion_de_Stock-main/app/api/finance/accounts/[id]/route.ts
+--- orig/Gestion_de_Stock-main/app/api/finance/accounts/[id]/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/finance/accounts/[id]/route.ts	2026-10-28 13:58:27.228191530 +0000
+@@ -0,0 +1,31 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { fail, isUuid, parseBody, serverError } from "@/lib/api";
++import { z } from "zod";
++
++export const runtime = "nodejs";
++
++const schema = z.object({ openingBalance: z.coerce.number().min(-1_000_000_000_000).max(1_000_000_000_000) });
++
++/** Solde d'ouverture d'un compte de trésorerie (montant réellement détenu au démarrage de l'application). */
++export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("expenses.approve"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  const body = await parseBody(request, schema);
++  if ("error" in body) return body.error;
++  try {
++    const sql = getSql();
++    const rows = await sql`
++      UPDATE cash_accounts SET opening_balance = ${body.data.openingBalance}::numeric
++      WHERE id = ${id}::uuid AND company_id = ${auth.user.companyId}::uuid RETURNING id`;
++    if (!rows[0]) return fail("Compte introuvable.", 404);
++    await logAudit(auth.user.id, "account_opening_balance", "cash_account", id, String(body.data.openingBalance));
++    return NextResponse.json({ ok: true });
++  } catch {
++    return serverError("Impossible de modifier le solde d’ouverture.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/finance/accounts/route.ts Gestion_de_Stock-main/app/api/finance/accounts/route.ts
+--- orig/Gestion_de_Stock-main/app/api/finance/accounts/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/finance/accounts/route.ts	2026-10-28 07:39:35.598036179 +0000
+@@ -0,0 +1,23 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++/** Comptes de trésorerie et leur solde : ouverture + encaissements validés − règlements validés. */
++export async function GET(request: Request) {
++  const auth = await authorize(request, rolesFor("finance.view"));
++  if ("error" in auth) return auth.error;
++  try {
++    const sql = getSql();
++    const accounts = await sql`
++      SELECT account_id AS id, name, type, opening_balance AS "openingBalance", inflow, outflow, balance
++      FROM account_balances WHERE company_id = ${auth.user.companyId}::uuid AND status = 'active'
++      ORDER BY CASE type WHEN 'cash' THEN 0 WHEN 'mobile_money' THEN 1 ELSE 2 END, name`;
++    return NextResponse.json({ accounts });
++  } catch {
++    return serverError();
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/finance/categories/route.ts Gestion_de_Stock-main/app/api/finance/categories/route.ts
+--- orig/Gestion_de_Stock-main/app/api/finance/categories/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/finance/categories/route.ts	2026-10-28 07:39:35.598903596 +0000
+@@ -0,0 +1,19 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++export async function GET(request: Request) {
++  const auth = await authorize(request, rolesFor("finance.view"));
++  if ("error" in auth) return auth.error;
++  try {
++    const sql = getSql();
++    const categories = await sql`SELECT id, name FROM expense_categories WHERE company_id = ${auth.user.companyId}::uuid AND status = 'active' ORDER BY name`;
++    return NextResponse.json({ categories });
++  } catch {
++    return serverError();
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/finance/expenses/[id]/approve/route.ts Gestion_de_Stock-main/app/api/finance/expenses/[id]/approve/route.ts
+--- orig/Gestion_de_Stock-main/app/api/finance/expenses/[id]/approve/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/finance/expenses/[id]/approve/route.ts	2026-10-28 07:39:35.600646064 +0000
+@@ -0,0 +1,23 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { expenseFailure, fail, isUuid, serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++/** Approuve une dépense en attente : le règlement est créé et la trésorerie diminue, dans la même transaction. */
++export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("expenses.approve"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  try {
++    const sql = getSql();
++    await sql`SELECT approve_expense(${auth.user.companyId}::uuid, ${id}::uuid, ${auth.user.id}::bigint)`;
++    await logAudit(auth.user.id, "expense_approve", "expense", id);
++    return NextResponse.json({ ok: true });
++  } catch (error) {
++    return expenseFailure(error) ?? serverError("Impossible d’approuver la dépense.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/finance/expenses/[id]/close/route.ts Gestion_de_Stock-main/app/api/finance/expenses/[id]/close/route.ts
+--- orig/Gestion_de_Stock-main/app/api/finance/expenses/[id]/close/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/finance/expenses/[id]/close/route.ts	2026-10-28 07:39:35.601657121 +0000
+@@ -0,0 +1,26 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { expenseFailure, fail, isUuid, parseBody, serverError } from "@/lib/api";
++import { expenseCloseSchema } from "@/lib/validation";
++
++export const runtime = "nodejs";
++
++/** Rejette une dépense en attente, ou annule une dépense payée (son règlement est alors contrepassé). */
++export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await authorize(request, rolesFor("expenses.approve"));
++  if ("error" in auth) return auth.error;
++  const { id } = await context.params;
++  if (!isUuid(id)) return fail("Identifiant invalide.");
++  const body = await parseBody(request, expenseCloseSchema);
++  if ("error" in body) return body.error;
++  try {
++    const sql = getSql();
++    const rows = await sql`SELECT close_expense(${auth.user.companyId}::uuid, ${id}::uuid, ${auth.user.id}::bigint, ${body.data.reason}::text) AS status`;
++    await logAudit(auth.user.id, "expense_close", "expense", id, body.data.reason);
++    return NextResponse.json({ ok: true, status: rows[0]?.status });
++  } catch (error) {
++    return expenseFailure(error) ?? serverError("Impossible de clôturer la dépense.");
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/finance/expenses/route.ts Gestion_de_Stock-main/app/api/finance/expenses/route.ts
+--- orig/Gestion_de_Stock-main/app/api/finance/expenses/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/finance/expenses/route.ts	2026-10-28 07:39:35.599778103 +0000
+@@ -0,0 +1,80 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize, logAudit, userCan } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { expenseFailure, fail, idempotencyKey, isForeignKey, isUnique, parseBody, serverError } from "@/lib/api";
++import { expenseSchema } from "@/lib/validation";
++
++export const runtime = "nodejs";
++
++export async function GET(request: Request) {
++  const auth = await authorize(request, rolesFor("finance.view"));
++  if ("error" in auth) return auth.error;
++  const status = new URL(request.url).searchParams.get("status");
++  try {
++    const sql = getSql();
++    const expenses = await sql`
++      SELECT e.id, e.expense_number AS number, e.amount, e.description, e.expense_date AS "expenseDate", e.status,
++             e.closed_reason AS "closedReason", e.created_at AS "createdAt",
++             c.name AS category, m.name AS method, u.name AS "createdBy"
++      FROM expenses e
++      JOIN expense_categories c ON c.id = e.category_id AND c.company_id = e.company_id
++      JOIN payment_methods m ON m.id = e.method_id AND m.company_id = e.company_id
++      LEFT JOIN users u ON u.id = e.created_by
++      WHERE e.company_id = ${auth.user.companyId}::uuid AND (${status}::text IS NULL OR e.status = ${status}::text)
++      ORDER BY e.expense_date DESC, e.created_at DESC LIMIT 200`;
++    return NextResponse.json({ expenses });
++  } catch {
++    return serverError();
++  }
++}
++
++/** Saisie d'une dépense : en attente d'approbation, ou payée tout de suite si l'utilisateur peut approuver. */
++export async function POST(request: Request) {
++  const auth = await authorize(request, rolesFor("expenses.write"));
++  if ("error" in auth) return auth.error;
++  const body = await parseBody(request, expenseSchema);
++  if ("error" in body) return body.error;
++  const d = body.data;
++  if (d.approve && !userCan(auth.user, "expenses.approve")) return fail("Vous n’avez pas le droit d’approuver une dépense.", 403);
++  const idem = idempotencyKey(request);
++  if ("error" in idem) return idem.error;
++  const key = idem.key;
++  const companyId = auth.user.companyId;
++
++  async function replay() {
++    if (!key) return null;
++    const sql = getSql();
++    const found = await sql`
++      SELECT e.id, e.expense_number AS number, e.status FROM idempotency_keys k
++      JOIN expenses e ON e.id = k.result_reference::uuid AND e.company_id = k.company_id
++      WHERE k.company_id = ${companyId}::uuid AND k.key = ${key} AND k.operation = 'expense_create'`;
++    return found[0] ?? null;
++  }
++
++  try {
++    const previous = await replay();
++    if (previous) return NextResponse.json({ expense: previous, replayed: true });
++    const sql = getSql();
++    const rows = await sql`
++      WITH r AS (
++        SELECT create_expense(${companyId}::uuid, ${auth.user.id}::bigint, ${d.categoryId}::uuid, ${d.amount}::numeric, ${d.description}::text,
++                              ${d.expenseDate ?? null}::date, ${d.methodId}::uuid, ${d.approve === true}::boolean) AS res
++      ), k AS (
++        INSERT INTO idempotency_keys (company_id, key, operation, result_reference)
++        SELECT ${companyId}::uuid, ${key}::text, 'expense_create', r.res->>'id' FROM r WHERE ${key}::text IS NOT NULL
++        RETURNING 1
++      )
++      SELECT res FROM r`;
++    const res = rows[0].res as { id: string; number: string; status: string };
++    await logAudit(auth.user.id, "expense_create", "expense", res.id, `${res.number} ${d.amount}`);
++    return NextResponse.json({ expense: res }, { status: 201 });
++  } catch (error) {
++    if (isUnique(error) && key) {
++      const previous = await replay().catch(() => null);
++      if (previous) return NextResponse.json({ expense: previous, replayed: true });
++    }
++    if (isForeignKey(error)) return fail("Catégorie ou mode de paiement invalide.", 400);
++    return expenseFailure(error) ?? serverError("Impossible d’enregistrer la dépense.");
++  }
++}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/finance/payables/route.ts Gestion_de_Stock-main/app/api/finance/payables/route.ts
 --- orig/Gestion_de_Stock-main/app/api/finance/payables/route.ts	1970-01-01 00:00:00.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/finance/payables/route.ts	2026-10-27 01:39:16.223218841 +0000
@@ -397,6 +636,96 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +      LIMIT 500
 +    `;
 +    return NextResponse.json({ receivables });
++  } catch {
++    return serverError();
++  }
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/finance/summary/route.ts Gestion_de_Stock-main/app/api/finance/summary/route.ts
+--- orig/Gestion_de_Stock-main/app/api/finance/summary/route.ts	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/api/finance/summary/route.ts	2026-10-28 07:39:35.597112772 +0000
+@@ -0,0 +1,86 @@
++import { NextResponse } from "next/server";
++import { getSql } from "@/lib/db";
++import { authorize } from "@/lib/auth";
++import { rolesFor } from "@/lib/roles";
++import { serverError } from "@/lib/api";
++
++export const runtime = "nodejs";
++
++const TZ = "Africa/Douala";
++const DATE = /^\d{4}-\d{2}-\d{2}$/;
++
++/**
++ * Synthèse financière d'une période (par défaut : le mois en cours).
++ * Les marges ne portent que sur les lignes de vente dont le coût est connu : le chiffre d'affaires sans coût connu
++ * est signalé à part, jamais compté comme une marge de 100 %.
++ */
++export async function GET(request: Request) {
++  const auth = await authorize(request, rolesFor("finance.view"));
++  if ("error" in auth) return auth.error;
++  const params = new URL(request.url).searchParams;
++  const from = DATE.test(params.get("from") ?? "") ? (params.get("from") as string) : null;
++  const to = DATE.test(params.get("to") ?? "") ? (params.get("to") as string) : null;
++  const companyId = auth.user.companyId;
++
++  try {
++    const sql = getSql();
++    const range = await sql`
++      SELECT COALESCE(${from}::date, date_trunc('month', NOW() AT TIME ZONE ${TZ})::date) AS "from",
++             COALESCE(${to}::date, (NOW() AT TIME ZONE ${TZ})::date) AS "to"`;
++    const start = String(range[0].from).slice(0, 10);
++    const end = String(range[0].to).slice(0, 10);
++
++    const [sales, costs, expenses, byCategory, receivables, payables, accounts, topProducts, stock] = await Promise.all([
++      sql`SELECT COALESCE(SUM(total_amount), 0) AS revenue, COUNT(*)::int AS count FROM sales
++          WHERE company_id = ${companyId}::uuid AND status = 'completed' AND (created_at AT TIME ZONE ${TZ})::date BETWEEN ${start}::date AND ${end}::date`,
++      sql`SELECT COALESCE(SUM(si.quantity * si.unit_cost) FILTER (WHERE si.unit_cost IS NOT NULL), 0) AS cogs,
++                 COALESCE(SUM(si.quantity * si.unit_price) FILTER (WHERE si.unit_cost IS NOT NULL), 0) AS "revenueWithCost",
++                 COALESCE(SUM(si.quantity * si.unit_price) FILTER (WHERE si.unit_cost IS NULL), 0) AS "revenueWithoutCost"
++          FROM sale_items si JOIN sales s ON s.id = si.sale_id
++          WHERE s.company_id = ${companyId}::uuid AND s.status = 'completed' AND (s.created_at AT TIME ZONE ${TZ})::date BETWEEN ${start}::date AND ${end}::date`,
++      sql`SELECT COALESCE(SUM(amount), 0) AS total FROM expenses
++          WHERE company_id = ${companyId}::uuid AND status = 'paid' AND expense_date BETWEEN ${start}::date AND ${end}::date`,
++      sql`SELECT c.name AS category, SUM(e.amount) AS total FROM expenses e JOIN expense_categories c ON c.id = e.category_id AND c.company_id = e.company_id
++          WHERE e.company_id = ${companyId}::uuid AND e.status = 'paid' AND e.expense_date BETWEEN ${start}::date AND ${end}::date
++          GROUP BY c.name ORDER BY SUM(e.amount) DESC`,
++      sql`SELECT COALESCE(SUM(due), 0) AS total FROM sale_balances WHERE company_id = ${companyId}::uuid AND status = 'completed' AND due > 0`,
++      sql`SELECT COALESCE(SUM(due), 0) AS total FROM purchase_balances WHERE company_id = ${companyId}::uuid AND status IN ('ordered', 'partially_received', 'received') AND due > 0`,
++      sql`SELECT name, type, balance FROM account_balances WHERE company_id = ${companyId}::uuid AND status = 'active' ORDER BY CASE type WHEN 'cash' THEN 0 WHEN 'mobile_money' THEN 1 ELSE 2 END, name`,
++      sql`SELECT p.name, SUM(si.quantity)::int AS quantity, SUM(si.quantity * si.unit_price) AS revenue, SUM(si.quantity * (si.unit_price - si.unit_cost)) AS margin
++          FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id AND p.company_id = s.company_id
++          WHERE s.company_id = ${companyId}::uuid AND s.status = 'completed' AND si.unit_cost IS NOT NULL
++            AND (s.created_at AT TIME ZONE ${TZ})::date BETWEEN ${start}::date AND ${end}::date
++          GROUP BY p.id, p.name ORDER BY margin DESC LIMIT 5`,
++      sql`SELECT COALESCE(SUM(quantity * avg_cost), 0) AS "atCost", COALESCE(SUM(quantity * unit_price), 0) AS "atPrice",
++                 COUNT(*) FILTER (WHERE avg_cost = 0 AND quantity > 0)::int AS "unknownCost"
++          FROM products WHERE company_id = ${companyId}::uuid AND archived = FALSE`
++    ]);
++
++    const revenue = Number(sales[0].revenue);
++    const cogs = Number(costs[0].cogs);
++    const withCost = Number(costs[0].revenueWithCost);
++    const withoutCost = Number(costs[0].revenueWithoutCost);
++    const grossMargin = withCost - cogs;
++    const expensesTotal = Number(expenses[0].total);
++    return NextResponse.json({
++      period: { from: start, to: end },
++      revenue,
++      salesCount: sales[0].count,
++      cogs,
++      grossMargin,
++      marginRate: withCost > 0 ? grossMargin / withCost : null,
++      revenueWithoutCost: withoutCost,
++      costCoverage: withCost + withoutCost > 0 ? withCost / (withCost + withoutCost) : null,
++      expenses: expensesTotal,
++      expensesByCategory: byCategory,
++      operatingResult: grossMargin - expensesTotal,
++      receivables: Number(receivables[0].total),
++      payables: Number(payables[0].total),
++      accounts,
++      topProducts,
++      stock: stock[0]
++    });
 +  } catch {
 +    return serverError();
 +  }
@@ -1205,17 +1534,21 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/products/[id]/route.ts Gestion_de_Stock-main/app/api/products/[id]/route.ts
 --- orig/Gestion_de_Stock-main/app/api/products/[id]/route.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/app/api/products/[id]/route.ts	2026-10-21 08:00:33.723323429 +0000
-@@ -28,7 +28,7 @@
++++ Gestion_de_Stock-main/app/api/products/[id]/route.ts	2026-10-28 07:38:55.804623463 +0000
+@@ -27,9 +27,10 @@
+         category = COALESCE(${d.category ?? null}::text, category),
          unit_price = COALESCE(${d.unitPrice ?? null}::numeric, unit_price),
          min_quantity = COALESCE(${d.minQuantity ?? null}::int, min_quantity),
++        avg_cost = CASE WHEN avg_cost = 0 THEN COALESCE(${d.avgCost ?? null}::numeric, avg_cost) ELSE avg_cost END,
          updated_at = NOW()
 -      WHERE id = ${id} AND archived = FALSE
+-      RETURNING id, sku, name, category, quantity, unit_price AS "unitPrice", min_quantity AS "minQuantity"
 +      WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE
-       RETURNING id, sku, name, category, quantity, unit_price AS "unitPrice", min_quantity AS "minQuantity"
++      RETURNING id, sku, name, category, quantity, unit_price AS "unitPrice", avg_cost AS "avgCost", min_quantity AS "minQuantity"
      `;
      if (!rows[0]) return fail("Produit introuvable.", 404);
-@@ -48,7 +48,7 @@
+     await logAudit(auth.user.id, "product_update", "product", id);
+@@ -48,7 +49,7 @@
    if (!id) return fail("Identifiant invalide.");
    try {
      const sql = getSql();
@@ -1262,26 +1595,36 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/products/route.ts Gestion_de_Stock-main/app/api/products/route.ts
 --- orig/Gestion_de_Stock-main/app/api/products/route.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/app/api/products/route.ts	2026-10-21 08:00:33.722923634 +0000
-@@ -15,7 +15,7 @@
++++ Gestion_de_Stock-main/app/api/products/route.ts	2026-10-28 07:38:55.804352109 +0000
+@@ -13,9 +13,9 @@
+   try {
+     const sql = getSql();
      const rows = await sql`
-       SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
+-      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
++      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice", avg_cost AS "avgCost",
               min_quantity AS "minQuantity", created_at AS "createdAt"
 -      FROM products WHERE archived = FALSE
 +      FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE
        ORDER BY name ASC LIMIT 1000
      `;
      return NextResponse.json({ products: rows });
-@@ -35,12 +35,12 @@
+@@ -29,21 +29,21 @@
+   if ("error" in auth) return auth.error;
+   const body = await parseBody(request, productInputSchema);
+   if ("error" in body) return body.error;
+-  const { sku, name, category, quantity, unitPrice, minQuantity } = body.data;
++  const { sku, name, category, quantity, unitPrice, minQuantity, avgCost } = body.data;
+ 
+   try {
      const sql = getSql();
      const rows = await sql`
        WITH p AS (
 -        INSERT INTO products (sku, name, category, quantity, unit_price, min_quantity)
 -        VALUES (${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity})
 -        RETURNING id, sku, name, category, quantity, unit_price, min_quantity, created_at
-+        INSERT INTO products (company_id, sku, name, category, quantity, unit_price, min_quantity)
-+        VALUES (${auth.user.companyId}::uuid, ${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity})
-+        RETURNING id, company_id, sku, name, category, quantity, unit_price, min_quantity, created_at
++        INSERT INTO products (company_id, sku, name, category, quantity, unit_price, min_quantity, avg_cost)
++        VALUES (${auth.user.companyId}::uuid, ${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity}, ${avgCost ?? 0})
++        RETURNING id, company_id, sku, name, category, quantity, unit_price, min_quantity, avg_cost, created_at
        ), m AS (
 -        INSERT INTO stock_movements (product_id, movement_type, quantity, note, user_id)
 -        SELECT id, 'in', quantity, 'Stock initial', ${auth.user.id}::bigint FROM p WHERE quantity > 0
@@ -1289,7 +1632,11 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +        SELECT company_id, id, 'in', quantity, 'Stock initial', ${auth.user.id}::bigint FROM p WHERE quantity > 0
          RETURNING 1
        )
-       SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
+-      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
++      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice", avg_cost AS "avgCost",
+              min_quantity AS "minQuantity", created_at AS "createdAt"
+       FROM p
+     `;
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/purchases/[id]/approve/route.ts Gestion_de_Stock-main/app/api/purchases/[id]/approve/route.ts
 --- orig/Gestion_de_Stock-main/app/api/purchases/[id]/approve/route.ts	1970-01-01 00:00:00.000000000 +0000
 +++ Gestion_de_Stock-main/app/api/purchases/[id]/approve/route.ts	2026-10-26 10:47:13.013947704 +0000
@@ -1690,7 +2037,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
      const items = await sql`
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/api/sales/route.ts Gestion_de_Stock-main/app/api/sales/route.ts
 --- orig/Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-27 01:38:48.144940958 +0000
++++ Gestion_de_Stock-main/app/api/sales/route.ts	2026-10-28 07:38:55.805376062 +0000
 @@ -2,7 +2,7 @@
  import { getSql } from "@/lib/db";
  import { authorize, logAudit } from "@/lib/auth";
@@ -1775,9 +2122,12 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
      const rows = await sql`
        WITH items AS (
          SELECT (e->>'productId')::bigint AS product_id, (e->>'quantity')::int AS qty
-@@ -51,13 +101,14 @@
+@@ -49,30 +99,54 @@
+       ), agg AS (
+         SELECT product_id, SUM(qty)::int AS qty FROM items GROUP BY product_id
        ), locked AS (
-         SELECT p.id, p.unit_price, p.quantity, a.qty
+-        SELECT p.id, p.unit_price, p.quantity, a.qty
++        SELECT p.id, p.unit_price, p.avg_cost, p.quantity, a.qty
          FROM products p JOIN agg a ON a.product_id = p.id
 -        WHERE p.archived = FALSE FOR UPDATE OF p
 +        WHERE p.archived = FALSE AND p.company_id = ${auth.user.companyId}::uuid FOR UPDATE OF p
@@ -1794,7 +2144,15 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
                 COALESCE((SELECT SUM(unit_price * qty) FROM locked), 0),
                 ${auth.user.id}::bigint, ${paymentMethod}::text
          WHERE (SELECT good FROM ok)
-@@ -71,8 +122,31 @@
+         RETURNING id, total_amount
+       ), lines AS (
+-        INSERT INTO sale_items (sale_id, product_id, quantity, unit_price)
+-        SELECT sale.id, l.id, l.qty, l.unit_price FROM sale, locked l
++        INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, unit_cost)
++        SELECT sale.id, l.id, l.qty, l.unit_price, NULLIF(l.avg_cost, 0) FROM sale, locked l
+         RETURNING 1
+       ), dec AS (
+         UPDATE products p SET quantity = p.quantity - l.qty, updated_at = NOW()
          FROM locked l WHERE p.id = l.id AND EXISTS (SELECT 1 FROM sale)
          RETURNING p.id, l.qty
        ), mov AS (
@@ -2438,9 +2796,21 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +export default function Page() {
 +  return <AppFrame permission="warehouses.view" render={(role) => <WarehousesView role={role} />} />;
 +}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/finance/page.tsx Gestion_de_Stock-main/app/finance/page.tsx
+--- orig/Gestion_de_Stock-main/app/finance/page.tsx	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/app/finance/page.tsx	2026-10-28 07:39:35.602654815 +0000
+@@ -0,0 +1,8 @@
++import AppFrame from "@/components/app-frame";
++import FinanceView from "@/components/finance-view";
++
++export const dynamic = "force-dynamic";
++
++export default function Page() {
++  return <AppFrame permission="finance.view" render={(role) => <FinanceView role={role} />} />;
++}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/globals.css Gestion_de_Stock-main/app/globals.css
 --- orig/Gestion_de_Stock-main/app/globals.css	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/app/globals.css	2026-10-27 01:36:27.464318904 +0000
++++ Gestion_de_Stock-main/app/globals.css	2026-10-29 08:34:11.697200364 +0000
 @@ -8,10 +8,11 @@
  }
  *{box-sizing:border-box}
@@ -2450,19 +2820,148 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
  body.no-scroll{overflow:hidden}
  button,input,select,textarea{font:inherit;color:inherit}
  h1,h2,h3,p{margin:0}
-+h1,h2,h3{font-weight:700;line-height:1.25}
++h1,h2,h3{font-weight:600;line-height:1.25}
  a{color:inherit}
  
  /* ===== Structure ===== */
-@@ -147,6 +148,7 @@
+@@ -19,7 +20,7 @@
+ .main{min-width:0;display:flex;flex-direction:column;min-height:100dvh}
+ .content{width:100%;max-width:1400px;margin:0 auto;padding:16px;padding-bottom:calc(28px + env(safe-area-inset-bottom))}
+ .topbar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:12px;padding:10px 16px;padding-top:calc(10px + env(safe-area-inset-top));background:rgba(255,255,255,.94);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+-.topbar-title{font-size:1.05rem;font-weight:700;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.topbar-title{font-size:1.05rem;font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .topbar-user{display:none;align-items:center;gap:6px;color:var(--muted);font-size:.9rem}
+ 
+ .sidebar{position:fixed;inset:0 auto 0 0;z-index:50;width:min(86vw,var(--sidebar-w));display:flex;flex-direction:column;background:var(--black);color:#fff;transform:translateX(-100%);transition:transform .25s ease;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);overflow-y:auto}
+@@ -32,11 +33,11 @@
+ .brand span:not(.brand-mark){display:block;color:#8d8d97;font-size:.78rem}
+ .brand-mark{flex:none;display:grid;place-items:center;width:40px;height:40px;border-radius:12px;color:#fff;background:linear-gradient(145deg,#ef2b33,#a50f16);box-shadow:0 5px 14px rgba(215,25,32,.35)}
+ .nav{display:flex;flex-direction:column;gap:4px;padding:8px 12px;flex:1}
+-.nav-item{display:flex;align-items:center;gap:12px;min-height:46px;padding:0 14px;border-radius:12px;color:#b9b9c2;text-decoration:none;font-weight:600;font-size:.95rem}
++.nav-item{display:flex;align-items:center;gap:12px;min-height:46px;padding:0 14px;border-radius:12px;color:#b9b9c2;text-decoration:none;font-weight:500;font-size:.95rem}
+ .nav-item:hover{background:#18181c;color:#fff}
+ .nav-item.active{background:rgba(215,25,32,.16);color:#ff5a62}
+ .user-card{display:flex;align-items:center;gap:10px;padding:14px 16px;border-top:1px solid #25252b}
+-.avatar{flex:none;display:grid;place-items:center;width:38px;height:38px;border-radius:50%;background:rgba(215,25,32,.2);color:#ff7a80;font-weight:700;font-size:.85rem}
++.avatar{flex:none;display:grid;place-items:center;width:38px;height:38px;border-radius:50%;background:rgba(215,25,32,.2);color:#ff7a80;font-weight:600;font-size:.85rem}
+ .user-info{min-width:0;flex:1}
+ .user-info strong{display:block;color:#fff;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .user-info span{display:block;color:#9a9aa5;font-size:.78rem}
+@@ -58,12 +59,12 @@
+ 
+ /* ===== En-têtes de page ===== */
+ .page-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:18px}
+-.page-head h1{font-size:clamp(1.3rem,4.5vw,1.8rem);font-weight:800;letter-spacing:-.01em}
++.page-head h1{font-size:clamp(1.3rem,4.5vw,1.8rem);font-weight:600;letter-spacing:-.01em}
+ .page-head p{margin-top:4px;color:var(--muted);font-size:.95rem}
+ .page-actions{display:flex;flex-wrap:wrap;gap:8px}
+ 
+ /* ===== Boutons ===== */
+-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 18px;border:1px solid var(--line);border-radius:11px;background:#fff;font-weight:600;font-size:.95rem;cursor:pointer;text-decoration:none;color:var(--ink);white-space:nowrap}
++.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 18px;border:1px solid var(--line);border-radius:11px;background:#fff;font-weight:500;font-size:.95rem;cursor:pointer;text-decoration:none;color:var(--ink);white-space:nowrap}
+ .btn:hover{background:#f7f7fa}
+ .btn:disabled{opacity:.55;cursor:not-allowed}
+ .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+@@ -75,11 +76,11 @@
+ 
+ /* ===== Cartes, KPI ===== */
+ .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px;min-width:0}
+-.card h3{font-size:1rem;font-weight:700;margin-bottom:12px}
++.card h3{font-size:1rem;font-weight:600;margin-bottom:12px}
+ .kpis{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));margin-bottom:16px}
+ .kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px;min-width:0}
+-.kpi span{display:block;color:var(--muted);font-size:.85rem;font-weight:600}
+-.kpi strong{display:block;margin-top:6px;font-size:clamp(1.25rem,4vw,1.65rem);font-weight:800;overflow-wrap:anywhere}
++.kpi span{display:block;color:var(--muted);font-size:.85rem;font-weight:500}
++.kpi strong{display:block;margin-top:6px;font-size:clamp(1.25rem,4vw,1.65rem);font-weight:600;overflow-wrap:anywhere}
+ .kpi small{display:block;margin-top:2px;color:var(--muted);font-size:.8rem}
+ .kpi.accent strong{color:var(--accent)}
+ .grid-2{display:grid;gap:16px;grid-template-columns:minmax(0,1fr)}
+@@ -104,12 +105,12 @@
+ .search input{padding-left:40px}
+ .search svg{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--muted);pointer-events:none}
+ .chip-row{display:flex;flex-wrap:wrap;gap:8px}
+-.chip{min-height:40px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:#fff;font-weight:600;font-size:.88rem;cursor:pointer}
++.chip{min-height:40px;padding:0 14px;border:1px solid var(--line);border-radius:999px;background:#fff;font-weight:500;font-size:.88rem;cursor:pointer}
+ .chip.active{background:var(--black);border-color:var(--black);color:#fff}
+ 
+ /* ===== Formulaires ===== */
+ .field{display:flex;flex-direction:column;gap:6px;min-width:0}
+-.field>span{font-size:.85rem;font-weight:600}
++.field>span{font-size:.85rem;font-weight:500}
+ input,select,textarea{width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;font-size:16px}
+ textarea{min-height:84px;resize:vertical}
+ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
+@@ -125,7 +126,7 @@
+ .alert-success{background:var(--ok-soft);color:#14532d}
+ .alert-info{background:var(--warn-soft);color:#7c4a03}
+ .empty{padding:36px 16px;text-align:center;color:var(--muted);background:var(--card);border:1px dashed var(--line);border-radius:var(--radius)}
+-.badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.78rem;font-weight:700;white-space:nowrap}
++.badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.78rem;font-weight:600;white-space:nowrap}
+ .badge-ok{background:var(--ok-soft);color:var(--ok)}
+ .badge-warn{background:var(--warn-soft);color:var(--warn)}
+ .badge-danger{background:var(--danger-soft);color:var(--danger)}
+@@ -147,7 +148,8 @@
    .table,.table tbody,.table tr,.table td{display:block;width:100%}
    .table tr{margin-bottom:10px;padding:10px 14px;background:var(--card);border:1px solid var(--line);border-radius:12px}
    .table td{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:7px 0;border:0;text-align:right}
+-  .table td::before{content:attr(data-label);flex:0 0 38%;color:var(--muted);font-size:.8rem;font-weight:600;text-align:left}
 +  .table td{overflow-wrap:anywhere}
-   .table td::before{content:attr(data-label);flex:0 0 38%;color:var(--muted);font-size:.8rem;font-weight:600;text-align:left}
++  .table td::before{content:attr(data-label);flex:0 0 38%;color:var(--muted);font-size:.8rem;font-weight:500;text-align:left}
    .table td.actions{justify-content:flex-end;flex-wrap:wrap;padding-top:10px}
    .table td.actions::before{display:none}
-@@ -209,3 +211,95 @@
+   .table .actions .btn{margin:0 0 0 6px}
+@@ -157,7 +159,7 @@
+ .modal-backdrop{position:fixed;inset:0;z-index:60;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,.55)}
+ .modal{display:flex;flex-direction:column;width:100%;max-height:94dvh;background:#fff;border-radius:18px 18px 0 0}
+ .modal-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:14px 16px 10px;border-bottom:1px solid var(--line)}
+-.modal-head h2{font-size:1.1rem;font-weight:700}
++.modal-head h2{font-size:1.1rem;font-weight:600}
+ .modal-body{padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom));overflow-y:auto}
+ @media (min-width:640px){
+   .modal-backdrop{align-items:center;padding:24px}
+@@ -167,14 +169,14 @@
+ /* ===== Lignes d'une vente ===== */
+ .sale-line{display:grid;gap:8px;grid-template-columns:minmax(0,1fr) 90px 40px;align-items:center;margin-bottom:8px}
+ @media (max-width:479px){.sale-line{grid-template-columns:minmax(0,1fr) 78px 40px}}
+-.total-bar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px;margin-top:10px;border-radius:12px;background:var(--black);color:#fff;font-weight:700}
++.total-bar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px;margin-top:10px;border-radius:12px;background:var(--black);color:#fff;font-weight:600}
+ .total-bar strong{font-size:1.25rem}
+ 
+ /* ===== Reçu ===== */
+ .receipt h3{text-align:center;margin-bottom:4px}
+ .receipt .muted{text-align:center;margin-bottom:12px;font-size:.88rem}
+ .receipt-line{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:.92rem}
+-.receipt-total{display:flex;justify-content:space-between;padding-top:10px;font-weight:800;font-size:1.05rem}
++.receipt-total{display:flex;justify-content:space-between;padding-top:10px;font-weight:600;font-size:1.05rem}
+ 
+ /* ===== Connexion / configuration ===== */
+ .auth-page{min-height:100dvh;display:grid;place-items:center;padding:16px;background:var(--black)}
+@@ -183,9 +185,9 @@
+ .auth-brand strong{font-size:1.15rem}
+ .auth-card h1{margin-top:6px;font-size:1.5rem}
+ .auth-sub{color:var(--muted);font-size:.95rem}
+-.auth-card label{display:flex;flex-direction:column;gap:6px;font-size:.88rem;font-weight:600}
++.auth-card label{display:flex;flex-direction:column;gap:6px;font-size:.88rem;font-weight:500}
+ .auth-card small{color:var(--muted)}
+-.auth-card button{min-height:48px;margin-top:6px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:1rem;font-weight:700;cursor:pointer}
++.auth-card button{min-height:48px;margin-top:6px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:1rem;font-weight:600;cursor:pointer}
+ .auth-card button:disabled{opacity:.6;cursor:wait}
+ .auth-error{padding:10px 12px;border-radius:8px;background:var(--danger-soft);color:#8f1717;font-size:.9rem}
+ @media (min-width:480px){.auth-card{padding:32px 28px}}
+@@ -199,9 +201,9 @@
+ }
+ 
+ /* Mot de passe oublié */
+-.auth-link{display:block;text-align:center;color:var(--accent);font-weight:600;font-size:.92rem;text-decoration:none;padding:6px}
++.auth-link{display:block;text-align:center;color:var(--accent);font-weight:500;font-size:.92rem;text-decoration:none;padding:6px}
+ .auth-link:hover{text-decoration:underline}
+-.auth-text-btn{margin-top:0!important;min-height:40px!important;background:transparent!important;color:var(--muted)!important;font-size:.9rem!important;font-weight:600!important}
++.auth-text-btn{margin-top:0!important;min-height:40px!important;background:transparent!important;color:var(--muted)!important;font-size:.9rem!important;font-weight:500!important}
+ .auth-ok{padding:12px 14px;border-radius:10px;background:var(--ok-soft);color:#14532d;font-size:.92rem}
+ .link-box{display:flex;gap:8px;align-items:stretch}
+ .link-box input{flex:1;min-width:0;font-size:.85rem}
+@@ -209,3 +211,115 @@
  /* Lignes d'une commande fournisseur */
  .purchase-line{display:grid;gap:8px;grid-template-columns:minmax(0,1fr) 80px 110px 40px;align-items:center;margin-bottom:8px}
  @media (max-width:479px){.purchase-line{grid-template-columns:minmax(0,1fr) 64px 84px 36px}}
@@ -2506,23 +3005,23 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +
 +/* Modales de produit et de mouvement (product-modal.tsx, movement-modal.tsx) : mêmes règles que les autres fenêtres. */
 +.modal-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:14px 16px 10px;border-bottom:1px solid var(--line)}
-+.modal-heading h2{font-size:1.1rem;font-weight:700;line-height:1.3}
++.modal-heading h2{font-size:1.1rem;font-weight:600;line-height:1.3}
 +.modal-heading p{margin-top:4px;color:var(--muted);font-size:.88rem;line-height:1.45}
-+.eyebrow{margin-bottom:2px;color:var(--accent);font-size:.72rem;font-weight:800;letter-spacing:.08em}
++.eyebrow{margin-bottom:2px;color:var(--accent);font-size:.72rem;font-weight:600;letter-spacing:.08em}
 +.icon-button{flex:none;display:grid;place-items:center;width:40px;height:40px;border:0;border-radius:10px;background:transparent;cursor:pointer}
 +.icon-button:hover{background:rgba(127,127,140,.15)}
 +.modal>form{display:flex;flex-direction:column;gap:14px;padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom));overflow-y:auto}
-+.modal>form label{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:.9rem;font-weight:600;color:#2b2f38}
++.modal>form label{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:.9rem;font-weight:500;color:#2b2f38}
 +.full-width{grid-column:1/-1}
 +.form-error{padding:10px 12px;border-radius:10px;background:var(--danger-soft);color:#8f1717;font-size:.9rem}
 +.modal-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px}
-+.primary-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 18px;border-radius:11px;font-weight:600;font-size:.95rem;line-height:1.25;text-align:center;cursor:pointer}
++.primary-button,.secondary-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 18px;border-radius:11px;font-weight:500;font-size:.95rem;line-height:1.25;text-align:center;cursor:pointer}
 +.primary-button{border:1px solid var(--accent);background:var(--accent);color:#fff}
 +.primary-button:hover{background:var(--accent-dark)}
 +.primary-button:disabled{opacity:.55;cursor:not-allowed}
 +.secondary-button{border:1px solid var(--line);background:#fff;color:var(--ink)}
 +.segmented{display:flex;flex-wrap:wrap;gap:8px}
-+.segmented .seg{flex:1 1 120px;min-height:42px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;font-weight:600;font-size:.88rem;cursor:pointer}
++.segmented .seg{flex:1 1 120px;min-height:42px;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;font-weight:500;font-size:.88rem;cursor:pointer}
 +.segmented .seg.active{background:var(--black);border-color:var(--black);color:#fff}
 +.stock-preview{padding:12px 14px;border-radius:10px;background:var(--bg);font-size:.92rem;line-height:1.5}
 +.stock-preview .neg{color:var(--danger)}
@@ -2534,8 +3033,8 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +.list-row .badge,.list-row .btn{flex:none}
 +@media (max-width:479px){.list-row:has(.btn){flex-wrap:wrap}.list-row:has(.btn)>span:first-child{flex-basis:100%}}
 +
-+.auth-card h1{font-weight:800}
-+.receipt h3{font-size:1.1rem;font-weight:800}
++.auth-card h1{font-weight:600}
++.receipt h3{font-size:1.1rem;font-weight:600}
 +
 +/* Photo de profil */
 +.avatar-img{object-fit:cover;background:#2a2a31;padding:0}
@@ -2552,12 +3051,32 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +h1,h2,h3{letter-spacing:-.015em}
 +h1{letter-spacing:-.022em}
 +.num,.table td.num,.table th.num,.kpi strong,.total-bar strong,.receipt,.receipt-line,.receipt-total,.badge,.bar em,.stock-preview,.list-row .badge{font-variant-numeric:tabular-nums lining-nums;font-feature-settings:"tnum" 1,"lnum" 1,"calt" 1}
-+.table th{font-weight:600;letter-spacing:.04em}
++.table th{font-weight:500;letter-spacing:.04em}
 +.eyebrow,.kpi span,.hint{letter-spacing:.01em}
-+button,.btn,.chip{font-weight:600;letter-spacing:.005em}
++button,.btn,.chip{font-weight:500;letter-spacing:.005em}
 +input,select,textarea{font-feature-settings:"calt" 1,"kern" 1}
 +small,.muted{font-feature-settings:"tnum" 1}
 +@media print{body{font-family:var(--font-sans),system-ui,Arial,sans-serif}}
++
++/* Échelle typographique sobre : 400 texte courant, 500 libellés et commandes, 600 titres et chiffres clés (jamais plus). */
++strong,b{font-weight:600}
++.table td strong,.list-row strong,.receipt strong,.profile-photo strong{font-weight:500}
++.badge{font-weight:500;letter-spacing:.01em}
++.nav-item,.nav-item.active{font-weight:500}
++.auth-card button,.primary-button,.btn-primary{font-weight:500}
++.kpi strong{letter-spacing:-.02em}
++.page-head h1{letter-spacing:-.02em}
++.table td.num strong,.num strong{font-weight:500}
++.total-bar strong{font-weight:600}
++
++/* Réglage final : seul le titre de page reste en 600 ; titres de cartes, de fenêtres et chiffres clés en 500. */
++.page-head h1{font-size:clamp(1.3rem,4.5vw,1.65rem)}
++.card h3,.modal-head h2,.modal-heading h2,.receipt h3{font-weight:500}
++.kpi strong{font-weight:500}
++.topbar-title{font-weight:500}
++.auth-card h1{font-weight:600}
++h1,h2,h3{font-weight:500}
++.page-head h1,.auth-card h1{font-weight:600}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app/inventaires/page.tsx Gestion_de_Stock-main/app/inventaires/page.tsx
 --- orig/Gestion_de_Stock-main/app/inventaires/page.tsx	1970-01-01 00:00:00.000000000 +0000
 +++ Gestion_de_Stock-main/app/inventaires/page.tsx	2026-10-23 07:55:27.625990101 +0000
@@ -2629,7 +3148,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/app
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/app-frame.tsx Gestion_de_Stock-main/components/app-frame.tsx
 --- orig/Gestion_de_Stock-main/components/app-frame.tsx	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/components/app-frame.tsx	2026-10-27 01:40:00.480437521 +0000
++++ Gestion_de_Stock-main/components/app-frame.tsx	2026-10-28 13:58:27.264564138 +0000
 @@ -1,7 +1,16 @@
  import { redirect } from "next/navigation";
  import AppShell from "@/components/app-shell";
@@ -2641,7 +3160,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
 +/** Permissions qui déterminent les entrées visibles du menu. */
 +const NAV_PERMISSIONS: Permission[] = [
 +  "movements.view", "suppliers.view", "customers.view", "sales.view", "purchases.view", "reports.view",
-+  "users.manage", "audit.view", "settings.manage", "warehouses.view", "transfers.view", "inventory.view", "payments.view"
++  "users.manage", "audit.view", "settings.manage", "warehouses.view", "transfers.view", "inventory.view", "payments.view", "finance.view"
 +];
 +
 +/** Identité de l'utilisateur connecté, transmise aux pages. */
@@ -2671,13 +3190,13 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
  }
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/app-shell.tsx Gestion_de_Stock-main/components/app-shell.tsx
 --- orig/Gestion_de_Stock-main/components/app-shell.tsx	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/components/app-shell.tsx	2026-10-27 01:40:00.480140336 +0000
-@@ -5,16 +5,21 @@
++++ Gestion_de_Stock-main/components/app-shell.tsx	2026-10-28 13:58:27.264218544 +0000
+@@ -5,16 +5,22 @@
  import { useEffect, useState } from "react";
  import {
    Boxes, ChartNoAxesCombined, ClipboardList, History, LayoutDashboard, LogOut, Menu, Package, ShieldCheck,
 -  Settings, ShoppingCart, Truck, UserRound, Users, ArrowLeftRight, X
-+  Settings, ShoppingCart, Truck, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Wallet, Warehouse, X
++  Settings, ShoppingCart, Truck, Users, ArrowLeftRight, ArrowRightLeft, ClipboardCheck, Landmark, Wallet, Warehouse, X
  } from "lucide-react";
 -import { can, type Permission, type Role } from "@/lib/roles";
 +import { type Permission, type Role } from "@/lib/roles";
@@ -2694,10 +3213,11 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
 +  { href: "/transferts", label: "Transferts", icon: ArrowRightLeft, permission: "transfers.view" },
 +  { href: "/inventaires", label: "Inventaires", icon: ClipboardCheck, permission: "inventory.view" },
 +  { href: "/paiements", label: "Paiements", icon: Wallet, permission: "payments.view" },
++  { href: "/finance", label: "Finance", icon: Landmark, permission: "finance.view" },
    { href: "/ventes", label: "Ventes", icon: ShoppingCart, permission: "sales.view" },
    { href: "/achats", label: "Achats", icon: ClipboardList, permission: "purchases.view" },
    { href: "/clients", label: "Clients", icon: Users, permission: "customers.view" },
-@@ -28,9 +33,8 @@
+@@ -28,9 +34,8 @@
  export default function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {
    const pathname = usePathname();
    const [open, setOpen] = useState(false);
@@ -2708,7 +3228,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
  
    useEffect(() => {
      setOpen(false);
-@@ -69,7 +73,7 @@
+@@ -69,7 +74,7 @@
            })}
          </nav>
          <div className="user-card">
@@ -2717,7 +3237,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
            <div className="user-info"><strong>{user.name}</strong><span>{user.roleLabel}</span></div>
            <button type="button" className="logout-icon" onClick={logout} aria-label="Se déconnecter" title="Se déconnecter"><LogOut size={18} /></button>
          </div>
-@@ -79,7 +83,7 @@
+@@ -79,7 +84,7 @@
          <header className="topbar">
            <button type="button" className="icon-btn menu-btn" onClick={() => setOpen(true)} aria-label="Ouvrir le menu"><Menu size={22} /></button>
            <h2 className="topbar-title">{current?.label ?? "Gestion de Stock"}</h2>
@@ -2749,6 +3269,293 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
 +    );
 +  }
 +  return <div className="avatar" style={style} aria-hidden="true">{initialsOf(name)}</div>;
++}
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/finance-view.tsx Gestion_de_Stock-main/components/finance-view.tsx
+--- orig/Gestion_de_Stock-main/components/finance-view.tsx	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/components/finance-view.tsx	2026-10-28 13:58:27.229271563 +0000
+@@ -0,0 +1,283 @@
++"use client";
++
++import { useState } from "react";
++import { Plus } from "lucide-react";
++import { api, useApi } from "@/lib/client";
++import { money } from "@/lib/format";
++import { can, type Role } from "@/lib/roles";
++import { Alert, Empty, Field, Loading, Modal, PageHeader } from "@/components/ui";
++
++type Summary = {
++  period: { from: string; to: string };
++  revenue: number; salesCount: number; cogs: number; grossMargin: number; marginRate: number | null;
++  revenueWithoutCost: number; costCoverage: number | null; expenses: number;
++  expensesByCategory: { category: string; total: string }[];
++  operatingResult: number; receivables: number; payables: number;
++  accounts: { name: string; type: string; balance: string }[];
++  topProducts: { name: string; quantity: number; revenue: string; margin: string }[];
++  stock: { atCost: string; atPrice: string; unknownCost: number };
++};
++type Expense = {
++  id: string; number: string; amount: string; description: string; expenseDate: string;
++  status: "pending" | "paid" | "rejected" | "cancelled"; closedReason: string | null; category: string; method: string; createdBy: string | null;
++};
++type Account = { id: string; name: string; type: string; openingBalance: string; inflow: string; outflow: string; balance: string };
++type Option = { id: string; name: string };
++
++const STATUS: Record<Expense["status"], { label: string; badge: string }> = {
++  pending: { label: "À approuver", badge: "badge-warn" },
++  paid: { label: "Payée", badge: "badge-ok" },
++  rejected: { label: "Rejetée", badge: "badge-muted" },
++  cancelled: { label: "Annulée", badge: "badge-danger" }
++};
++const ACCOUNT_TYPES: Record<string, string> = { cash: "Espèces", mobile_money: "Mobile money", bank: "Banque" };
++const PRESETS = { month: "Ce mois", week: "7 jours", days30: "30 jours", year: "Cette année" } as const;
++type Preset = keyof typeof PRESETS;
++
++const pad = (n: number) => String(n).padStart(2, "0");
++const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
++function range(preset: Preset) {
++  const today = new Date();
++  const start = new Date(today);
++  if (preset === "month") start.setDate(1);
++  else if (preset === "week") start.setDate(today.getDate() - 6);
++  else if (preset === "days30") start.setDate(today.getDate() - 29);
++  else start.setMonth(0, 1);
++  return { from: iso(start), to: iso(today) };
++}
++const negative = (value: number | string) => (Number(value) < 0 ? { color: "var(--danger)" } : undefined);
++
++function ExpenseModal({ canApprove, onClose, onDone }: { canApprove: boolean; onClose: () => void; onDone: (message: string) => void }) {
++  const categories = useApi<{ categories: Option[] }>("/api/finance/categories");
++  const methods = useApi<{ methods: Option[] }>("/api/payment-methods");
++  const [error, setError] = useState("");
++  const [saving, setSaving] = useState(false);
++  const [approve, setApprove] = useState(canApprove);
++  const [idemKey] = useState(() => crypto.randomUUID());
++
++  async function submit(event: React.FormEvent<HTMLFormElement>) {
++    event.preventDefault();
++    setError("");
++    setSaving(true);
++    const form = Object.fromEntries(new FormData(event.currentTarget).entries());
++    try {
++      const result = await api<{ expense: { number: string; status: string } }>("/api/finance/expenses", {
++        method: "POST",
++        headers: { "Idempotency-Key": idemKey },
++        body: JSON.stringify({ ...form, amount: Number(form.amount), approve: canApprove && approve })
++      });
++      onDone(result.expense.status === "paid" ? `Dépense ${result.expense.number} enregistrée et payée.` : `Dépense ${result.expense.number} enregistrée, en attente d’approbation.`);
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Enregistrement impossible.");
++    } finally {
++      setSaving(false);
++    }
++  }
++
++  return (
++    <Modal title="Nouvelle dépense" onClose={onClose}>
++      <form onSubmit={submit}>
++        {error && <Alert>{error}</Alert>}
++        <div className="form-grid">
++          <Field label="Catégorie">
++            <select name="categoryId" required defaultValue="">
++              <option value="" disabled>Choisir…</option>
++              {categories.data?.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
++            </select>
++          </Field>
++          <Field label="Montant (FCFA)"><input name="amount" type="number" min={1} step="1" inputMode="numeric" required /></Field>
++          <Field label="Description" span><input name="description" required minLength={2} maxLength={300} placeholder="Ex. Loyer d’octobre" /></Field>
++          <Field label="Date"><input name="expenseDate" type="date" defaultValue={iso(new Date())} required /></Field>
++          <Field label="Payée avec">
++            <select name="methodId" required defaultValue="">
++              <option value="" disabled>Choisir…</option>
++              {methods.data?.methods.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
++            </select>
++          </Field>
++        </div>
++        {canApprove && (
++          <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
++            <input type="checkbox" checked={approve} onChange={(e) => setApprove(e.target.checked)} style={{ width: "auto" }} />
++            <span>Approuver et payer tout de suite (la trésorerie diminue)</span>
++          </label>
++        )}
++        <div className="form-actions">
++          <button type="button" className="btn" onClick={onClose}>Annuler</button>
++          <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
++        </div>
++      </form>
++    </Modal>
++  );
++}
++
++export default function FinanceView({ role }: { role: Role }) {
++  const [tab, setTab] = useState<"summary" | "expenses" | "treasury">("summary");
++  const [preset, setPreset] = useState<Preset>("month");
++  const { from, to } = range(preset);
++  const summary = useApi<Summary>(`/api/finance/summary?from=${from}&to=${to}`);
++  const expenses = useApi<{ expenses: Expense[] }>("/api/finance/expenses");
++  const accounts = useApi<{ accounts: Account[] }>("/api/finance/accounts");
++  const [creating, setCreating] = useState(false);
++  const [notice, setNotice] = useState("");
++  const [error, setError] = useState("");
++  const canWrite = can(role, "expenses.write");
++  const canApprove = can(role, "expenses.approve");
++  const s = summary.data;
++
++  async function reloadAll() {
++    await Promise.all([summary.reload(), expenses.reload(), accounts.reload()]);
++  }
++
++  async function approve(expense: Expense) {
++    if (!window.confirm(`Approuver et payer la dépense ${expense.number} de ${money(expense.amount)} ?`)) return;
++    setError("");
++    try {
++      await api(`/api/finance/expenses/${expense.id}/approve`, { method: "POST" });
++      setNotice(`Dépense ${expense.number} approuvée et payée.`);
++      await reloadAll();
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Approbation impossible.");
++    }
++  }
++
++  async function close(expense: Expense) {
++    const reason = window.prompt(expense.status === "paid" ? `Annuler la dépense ${expense.number} (le paiement sera contrepassé). Motif :` : `Rejeter la dépense ${expense.number}. Motif :`);
++    if (!reason) return;
++    setError("");
++    try {
++      await api(`/api/finance/expenses/${expense.id}/close`, { method: "POST", body: JSON.stringify({ reason }) });
++      setNotice(expense.status === "paid" ? `Dépense ${expense.number} annulée.` : `Dépense ${expense.number} rejetée.`);
++      await reloadAll();
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Action impossible.");
++    }
++  }
++
++  async function setOpening(account: Account) {
++    if (!canApprove) return;
++    const value = window.prompt(`Solde d’ouverture du compte « ${account.name} » (FCFA), c’est-à-dire le montant détenu au démarrage :`, String(Number(account.openingBalance)));
++    if (value === null || value.trim() === "") return;
++    setError("");
++    try {
++      await api(`/api/finance/accounts/${account.id}`, { method: "PATCH", body: JSON.stringify({ openingBalance: Number(value.replace(/\s/g, "")) }) });
++      setNotice(`Solde d’ouverture de « ${account.name} » enregistré.`);
++      await reloadAll();
++    } catch (e) {
++      setError(e instanceof Error ? e.message : "Modification impossible.");
++    }
++  }
++
++  return (
++    <>
++      <PageHeader title="Finance" subtitle="Marges, dépenses et trésorerie : le résultat réel de votre activité.">
++        {canWrite && <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={18} /> Nouvelle dépense</button>}
++      </PageHeader>
++      {notice && <Alert kind="success">{notice}</Alert>}
++      {error && <Alert>{error}</Alert>}
++
++      <div className="chip-row" style={{ marginBottom: 14 }}>
++        <button type="button" className={`chip${tab === "summary" ? " active" : ""}`} onClick={() => setTab("summary")}>Synthèse</button>
++        <button type="button" className={`chip${tab === "expenses" ? " active" : ""}`} onClick={() => setTab("expenses")}>Dépenses</button>
++        <button type="button" className={`chip${tab === "treasury" ? " active" : ""}`} onClick={() => setTab("treasury")}>Trésorerie</button>
++      </div>
++
++      {tab === "summary" && (
++        <>
++          <div className="chip-row" style={{ marginBottom: 14 }}>
++            {(Object.keys(PRESETS) as Preset[]).map((key) => (
++              <button key={key} type="button" className={`chip${preset === key ? " active" : ""}`} onClick={() => setPreset(key)}>{PRESETS[key]}</button>
++            ))}
++          </div>
++          {summary.error && <Alert>{summary.error}</Alert>}
++          {!s ? <Loading /> : (
++            <>
++              {s.costCoverage !== null && s.costCoverage < 1 && (
++                <Alert>Le coût d’achat est inconnu pour {Math.round((1 - s.costCoverage) * 100)} % du chiffre d’affaires ({money(s.revenueWithoutCost)}). Renseignez le coût moyen dans la fiche produit, ou réceptionnez des achats, pour fiabiliser la marge.</Alert>
++              )}
++              <div className="kpis">
++                <div className="kpi"><span>Chiffre d’affaires</span><strong>{money(s.revenue)}</strong><small>{s.salesCount} vente(s)</small></div>
++                <div className="kpi"><span>Marge brute</span><strong style={negative(s.grossMargin)}>{money(s.grossMargin)}</strong><small>{s.marginRate === null ? "Coût inconnu" : `${(s.marginRate * 100).toFixed(1).replace(".", ",")} % des ventes au coût connu`}</small></div>
++                <div className="kpi"><span>Dépenses payées</span><strong>{money(s.expenses)}</strong><small>Sur la période</small></div>
++                <div className="kpi accent"><span>Résultat d’exploitation</span><strong style={negative(s.operatingResult)}>{money(s.operatingResult)}</strong><small>Marge brute − dépenses</small></div>
++              </div>
++              <div className="kpis">
++                <div className="kpi"><span>Créances clients</span><strong>{money(s.receivables)}</strong><small>À encaisser</small></div>
++                <div className="kpi"><span>Dettes fournisseurs</span><strong>{money(s.payables)}</strong><small>À régler</small></div>
++                <div className="kpi"><span>Stock au coût (CUMP)</span><strong>{money(Number(s.stock.atCost))}</strong><small>{s.stock.unknownCost > 0 ? `${s.stock.unknownCost} produit(s) sans coût` : `Au prix de vente : ${money(Number(s.stock.atPrice))}`}</small></div>
++              </div>
++              <div className="grid-2">
++                <section className="card">
++                  <h3>Dépenses par catégorie</h3>
++                  {s.expensesByCategory.length === 0 ? <p className="hint">Aucune dépense sur la période.</p> : (
++                    <div className="list">{s.expensesByCategory.map((c) => <div className="list-row" key={c.category}><span>{c.category}</span><span className="num"><strong>{money(c.total)}</strong></span></div>)}</div>
++                  )}
++                </section>
++                <section className="card">
++                  <h3>Produits les plus rentables</h3>
++                  {s.topProducts.length === 0 ? <p className="hint">Aucune vente avec un coût connu sur la période.</p> : (
++                    <div className="list">{s.topProducts.map((p) => <div className="list-row" key={p.name}><span>{p.name}<small>{p.quantity} vendu(s)</small></span><span className="num"><strong>{money(p.margin)}</strong></span></div>)}</div>
++                  )}
++                </section>
++              </div>
++            </>
++          )}
++        </>
++      )}
++
++      {tab === "expenses" && (
++        expenses.loading && !expenses.data ? <Loading /> : (expenses.data?.expenses ?? []).length === 0 ? <Empty>Aucune dépense enregistrée.</Empty> : (
++          <div className="table-card"><div className="table-wrap">
++            <table className="table">
++              <thead><tr><th>N°</th><th>Date</th><th>Catégorie</th><th>Description</th><th>Payée avec</th><th className="num">Montant</th><th>Statut</th><th /></tr></thead>
++              <tbody>
++                {expenses.data?.expenses.map((e) => (
++                  <tr key={e.id}>
++                    <td data-label="N°"><strong>{e.number}</strong></td>
++                    <td data-label="Date">{new Date(e.expenseDate).toLocaleDateString("fr-FR")}</td>
++                    <td data-label="Catégorie">{e.category}</td>
++                    <td data-label="Description">{e.description}{e.closedReason && <small> · {e.closedReason}</small>}</td>
++                    <td data-label="Payée avec">{e.method}</td>
++                    <td data-label="Montant" className="num"><strong>{money(e.amount)}</strong></td>
++                    <td data-label="Statut"><span className={`badge ${STATUS[e.status].badge}`}>{STATUS[e.status].label}</span></td>
++                    <td className="actions">
++                      {canApprove && e.status === "pending" && <button type="button" className="btn btn-sm btn-primary" onClick={() => approve(e)}>Approuver</button>}
++                      {canApprove && (e.status === "pending" || e.status === "paid") && <button type="button" className="btn btn-sm btn-danger" onClick={() => close(e)}>{e.status === "paid" ? "Annuler" : "Rejeter"}</button>}
++                    </td>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div></div>
++        )
++      )}
++
++      {tab === "treasury" && (
++        accounts.loading && !accounts.data ? <Loading /> : (
++          <>
++            <div className="table-card"><div className="table-wrap">
++              <table className="table">
++                <thead><tr><th>Compte</th><th>Type</th><th className="num">Ouverture</th><th className="num">Encaissé</th><th className="num">Décaissé</th><th className="num">Solde</th><th /></tr></thead>
++                <tbody>
++                  {accounts.data?.accounts.map((a) => (
++                    <tr key={a.id}>
++                      <td data-label="Compte"><strong>{a.name}</strong></td>
++                      <td data-label="Type">{ACCOUNT_TYPES[a.type] ?? a.type}</td>
++                      <td data-label="Ouverture" className="num">{money(a.openingBalance)}</td>
++                      <td data-label="Encaissé" className="num">{money(a.inflow)}</td>
++                      <td data-label="Décaissé" className="num">{money(a.outflow)}</td>
++                      <td data-label="Solde" className="num"><strong style={negative(a.balance)}>{money(a.balance)}</strong></td>
++                      <td className="actions">{canApprove && <button type="button" className="btn btn-sm" onClick={() => setOpening(a)}>Solde d’ouverture</button>}</td>
++                    </tr>
++                  ))}
++                </tbody>
++              </table>
++            </div></div>
++            <p className="hint" style={{ marginTop: 10 }}>Solde = ouverture + encaissements validés − règlements validés. Les paiements en attente ou contrepassés ne comptent pas. Renseignez le solde d’ouverture avec le montant réellement détenu au démarrage.</p>
++          </>
++        )
++      )}
++
++      {creating && <ExpenseModal canApprove={canApprove} onClose={() => setCreating(false)} onDone={(message) => { setCreating(false); setNotice(message); void reloadAll(); }} />}
++    </>
++  );
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/inventory-view.tsx Gestion_de_Stock-main/components/inventory-view.tsx
 --- orig/Gestion_de_Stock-main/components/inventory-view.tsx	1970-01-01 00:00:00.000000000 +0000
@@ -3316,8 +4123,8 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/components/products-view.tsx Gestion_de_Stock-main/components/products-view.tsx
 --- orig/Gestion_de_Stock-main/components/products-view.tsx	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/components/products-view.tsx	2026-10-23 11:54:47.118225459 +0000
-@@ -1,6 +1,6 @@
++++ Gestion_de_Stock-main/components/products-view.tsx	2026-10-28 07:39:46.469792960 +0000
+@@ -1,13 +1,79 @@
  "use client";
  
 -import { useMemo, useState } from "react";
@@ -3325,10 +4132,12 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
  import { Plus, Search } from "lucide-react";
  import { api, useApi } from "@/lib/client";
  import { money } from "@/lib/format";
-@@ -9,6 +9,72 @@
+ import { can, type Role } from "@/lib/roles";
+ import { Alert, Empty, Field, Loading, Modal, PageHeader, StockBadge } from "@/components/ui";
  
- type Product = { id: string; sku: string; name: string; category: string; quantity: number; unitPrice: string; minQuantity: number };
- 
+-type Product = { id: string; sku: string; name: string; category: string; quantity: number; unitPrice: string; minQuantity: number };
++type Product = { id: string; sku: string; name: string; category: string; quantity: number; unitPrice: string; minQuantity: number; avgCost?: string };
++
 +type Barcode = { id: string; barcode: string };
 +
 +/** Codes-barres d'un produit : un lecteur saisit le code puis appuie sur Entrée. */
@@ -3394,11 +4203,22 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/com
 +    </div>
 +  );
 +}
-+
+ 
  export default function ProductsView({ role }: { role: Role }) {
    const { data, error, loading, reload } = useApi<{ products: Product[] }>("/api/products");
-   const [query, setQuery] = useState("");
-@@ -135,6 +201,7 @@
+@@ -123,6 +189,11 @@
+               <Field label="Référence"><input name="sku" required defaultValue={current?.sku} /></Field>
+               <Field label="Catégorie"><input name="category" defaultValue={current?.category ?? "Général"} /></Field>
+               <Field label="Prix unitaire (FCFA)"><input name="unitPrice" type="number" min={0} step="1" inputMode="numeric" required defaultValue={current ? Number(current.unitPrice) : 0} /></Field>
++              {!current || Number(current.avgCost ?? 0) === 0 ? (
++                <Field label="Coût d’achat moyen (FCFA)"><input name="avgCost" type="number" min={0} step="1" inputMode="numeric" placeholder="Pour calculer vos marges" /></Field>
++              ) : (
++                <Field label="Coût moyen pondéré (calcul automatique)"><input value={money(Number(current.avgCost))} readOnly aria-readonly="true" /></Field>
++              )}
+               <Field label="Seuil d’alerte"><input name="minQuantity" type="number" min={0} step="1" inputMode="numeric" defaultValue={current?.minQuantity ?? 0} /></Field>
+               {editing === "new" ? (
+                 <Field label="Stock initial" span><input name="quantity" type="number" min={0} step="1" inputMode="numeric" defaultValue={0} /></Field>
+@@ -135,6 +206,7 @@
                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
              </div>
            </form>
@@ -5408,10 +6228,257 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/
 +);
 +CREATE INDEX IF NOT EXISTS payment_provider_sessions_open_idx ON payment_provider_sessions (created_at) WHERE last_status IN ('initiated', 'pending');
 +CREATE INDEX IF NOT EXISTS payment_provider_sessions_notif_idx ON payment_provider_sessions (notif_token) WHERE notif_token IS NOT NULL;
+diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/db/0018_cump_expenses_treasury.sql Gestion_de_Stock-main/db/0018_cump_expenses_treasury.sql
+--- orig/Gestion_de_Stock-main/db/0018_cump_expenses_treasury.sql	1970-01-01 00:00:00.000000000 +0000
++++ Gestion_de_Stock-main/db/0018_cump_expenses_treasury.sql	2026-10-28 01:50:34.145854129 +0000
+@@ -0,0 +1,243 @@
++-- 0018 : valorisation CUMP, marges, dépenses et trésorerie (cahier des charges 3.8, 7.8).
++-- CUMP = coût unitaire moyen pondéré : à chaque réception d'achat, nouveau coût moyen =
++--   (stock avant × coût moyen + quantité reçue × coût d'achat) / (stock avant + quantité reçue).
++-- Chaque ligne de vente conserve le coût moyen du moment (sale_items.unit_cost) : les marges passées ne changent plus.
++-- Les ventes antérieures n'ont pas de coût connu (NULL) : elles sont exclues du calcul de marge, jamais comptées à zéro.
++-- Trésorerie : comptes (caisse, mobile money, banque) rattachés aux modes de paiement ; solde = solde d'ouverture
++-- + encaissements validés - règlements validés. Dépenses : en attente -> payée (approbation) ou rejetée ; annuler une
++-- dépense payée contrepasse son paiement. Additive, idempotente.
++
++ALTER TABLE products ADD COLUMN IF NOT EXISTS avg_cost numeric(19,4) NOT NULL DEFAULT 0 CHECK (avg_cost >= 0);
++ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS unit_cost numeric(19,4) CHECK (unit_cost IS NULL OR unit_cost >= 0);
++
++CREATE TABLE IF NOT EXISTS cash_accounts (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  name text NOT NULL CHECK (length(btrim(name)) > 0),
++  type text NOT NULL CHECK (type IN ('cash', 'mobile_money', 'bank')),
++  opening_balance numeric(19,4) NOT NULL DEFAULT 0,
++  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
++  UNIQUE (id, company_id),
++  UNIQUE (company_id, name)
++);
++
++INSERT INTO cash_accounts (company_id, name, type)
++SELECT c.id, v.name, v.type FROM companies c
++CROSS JOIN (VALUES ('Caisse principale', 'cash'), ('Orange Money', 'mobile_money'), ('MTN Mobile Money', 'mobile_money'), ('Banque', 'bank')) AS v(name, type)
++ON CONFLICT (company_id, name) DO NOTHING;
++
++ALTER TABLE payment_methods ADD COLUMN IF NOT EXISTS account_id uuid;
++UPDATE payment_methods m SET account_id = a.id
++FROM cash_accounts a
++WHERE a.company_id = m.company_id AND m.account_id IS NULL
++  AND a.name = CASE m.code WHEN 'cash' THEN 'Caisse principale' WHEN 'orange_money' THEN 'Orange Money' WHEN 'mtn_money' THEN 'MTN Mobile Money' ELSE 'Banque' END;
++ALTER TABLE payment_methods DROP CONSTRAINT IF EXISTS payment_methods_account_fk;
++ALTER TABLE payment_methods ADD CONSTRAINT payment_methods_account_fk FOREIGN KEY (account_id, company_id) REFERENCES cash_accounts(id, company_id);
++
++CREATE TABLE IF NOT EXISTS expense_categories (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  name text NOT NULL CHECK (length(btrim(name)) > 0),
++  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
++  UNIQUE (id, company_id),
++  UNIQUE (company_id, name)
++);
++
++INSERT INTO expense_categories (company_id, name)
++SELECT c.id, v.name FROM companies c
++CROSS JOIN (VALUES ('Loyer'), ('Salaires'), ('Transport'), ('Électricité et eau'), ('Internet et téléphone'), ('Fournitures'), ('Marketing'), ('Entretien et réparations'), ('Taxes et impôts'), ('Autres')) AS v(name)
++ON CONFLICT (company_id, name) DO NOTHING;
++
++CREATE TABLE IF NOT EXISTS expenses (
++  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
++  company_id uuid NOT NULL REFERENCES companies(id),
++  expense_number text NOT NULL,
++  category_id uuid NOT NULL,
++  amount numeric(19,4) NOT NULL CHECK (amount > 0),
++  description text NOT NULL CHECK (length(btrim(description)) > 0),
++  expense_date date NOT NULL DEFAULT CURRENT_DATE,
++  method_id uuid NOT NULL,
++  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'rejected', 'cancelled')),
++  payment_id uuid,
++  created_by bigint REFERENCES users(id),
++  approved_by bigint REFERENCES users(id),
++  approved_at timestamptz,
++  closed_reason text,
++  created_at timestamptz NOT NULL DEFAULT now(),
++  UNIQUE (id, company_id),
++  UNIQUE (company_id, expense_number),
++  FOREIGN KEY (category_id, company_id) REFERENCES expense_categories(id, company_id),
++  FOREIGN KEY (method_id, company_id) REFERENCES payment_methods(id, company_id),
++  FOREIGN KEY (payment_id, company_id) REFERENCES payments(id, company_id)
++);
++CREATE INDEX IF NOT EXISTS expenses_list_idx ON expenses (company_id, expense_date DESC);
++
++CREATE OR REPLACE VIEW account_balances AS
++SELECT a.company_id, a.id AS account_id, a.name, a.type, a.status, a.opening_balance,
++       COALESCE(x.inflow, 0) AS inflow, COALESCE(x.outflow, 0) AS outflow,
++       a.opening_balance + COALESCE(x.inflow, 0) - COALESCE(x.outflow, 0) AS balance
++FROM cash_accounts a
++LEFT JOIN LATERAL (
++  SELECT SUM(p.amount) FILTER (WHERE p.direction = 'in') AS inflow, SUM(p.amount) FILTER (WHERE p.direction = 'out') AS outflow
++  FROM payments p JOIN payment_methods m ON m.id = p.method_id AND m.company_id = p.company_id
++  WHERE m.account_id = a.id AND m.company_id = a.company_id AND p.status = 'posted'
++) x ON TRUE;
++
++-- Les nouvelles entreprises reçoivent comptes, modes de paiement et catégories de dépenses par défaut.
++CREATE OR REPLACE FUNCTION seed_company_finance() RETURNS trigger LANGUAGE plpgsql AS $$
++BEGIN
++  INSERT INTO cash_accounts (company_id, name, type) VALUES
++    (NEW.id, 'Caisse principale', 'cash'), (NEW.id, 'Orange Money', 'mobile_money'),
++    (NEW.id, 'MTN Mobile Money', 'mobile_money'), (NEW.id, 'Banque', 'bank')
++  ON CONFLICT (company_id, name) DO NOTHING;
++  INSERT INTO payment_methods (company_id, code, name, type, account_id)
++  SELECT NEW.id, v.code, v.name, v.type, a.id
++  FROM (VALUES ('cash', 'Espèces', 'cash', 'Caisse principale'), ('orange_money', 'Orange Money', 'mobile_money', 'Orange Money'),
++               ('mtn_money', 'MTN Mobile Money', 'mobile_money', 'MTN Mobile Money'), ('card', 'Carte bancaire', 'card', 'Banque'),
++               ('bank_transfer', 'Virement bancaire', 'bank', 'Banque')) AS v(code, name, type, account)
++  JOIN cash_accounts a ON a.company_id = NEW.id AND a.name = v.account
++  ON CONFLICT (company_id, code) DO NOTHING;
++  INSERT INTO expense_categories (company_id, name)
++  SELECT NEW.id, v.name FROM (VALUES ('Loyer'), ('Salaires'), ('Transport'), ('Électricité et eau'), ('Internet et téléphone'),
++    ('Fournitures'), ('Marketing'), ('Entretien et réparations'), ('Taxes et impôts'), ('Autres')) AS v(name)
++  ON CONFLICT (company_id, name) DO NOTHING;
++  RETURN NULL;
++END
++$$;
++DROP TRIGGER IF EXISTS companies_seed_payment_methods ON companies;
++DROP TRIGGER IF EXISTS companies_seed_finance ON companies;
++CREATE TRIGGER companies_seed_finance AFTER INSERT ON companies FOR EACH ROW EXECUTE FUNCTION seed_company_finance();
++
++-- Réception d'achat avec calcul du CUMP (remplace la version de 0013).
++CREATE OR REPLACE FUNCTION receive_purchase(p_company uuid, p_order bigint, p_user bigint, p_lines jsonb, p_note text) RETURNS text
++LANGUAGE plpgsql AS $$
++DECLARE
++  o purchase_orders%ROWTYPE;
++  x RECORD;
++  it purchase_order_items%ROWTYPE;
++  pr products%ROWTYPE;
++  rid uuid := gen_random_uuid();
++  seq bigint;
++  rnum text;
++  touched int := 0;
++BEGIN
++  SELECT * INTO o FROM purchase_orders WHERE id = p_order AND company_id = p_company FOR UPDATE;
++  IF NOT FOUND THEN RAISE EXCEPTION 'PURCHASE_NOT_FOUND'; END IF;
++  IF o.status NOT IN ('ordered', 'partially_received') THEN RAISE EXCEPTION 'PURCHASE_BAD_STATUS'; END IF;
++
++  IF p_lines IS NULL THEN
++    SELECT jsonb_agg(jsonb_build_object('itemId', id, 'received', quantity - quantity_received - quantity_rejected, 'rejected', 0))
++      INTO p_lines FROM purchase_order_items WHERE order_id = p_order;
++  END IF;
++
++  INSERT INTO document_sequences (company_id, document_type, period, next_value)
++  VALUES (p_company, 'goods_receipt', to_char(now(), 'YYYY'), 2)
++  ON CONFLICT (company_id, document_type, period) DO UPDATE SET next_value = document_sequences.next_value + 1
++  RETURNING next_value - 1 INTO seq;
++  rnum := 'REC-' || to_char(now(), 'YYYY') || '-' || lpad(seq::text, 5, '0');
++
++  INSERT INTO goods_receipts (id, company_id, order_id, receipt_number, note, received_by)
++  VALUES (rid, p_company, p_order, rnum, p_note, p_user);
++
++  FOR x IN SELECT (e->>'itemId')::bigint AS item_id, COALESCE((e->>'received')::int, 0) AS rec, COALESCE((e->>'rejected')::int, 0) AS rej
++           FROM jsonb_array_elements(p_lines) e ORDER BY 1 LOOP
++    IF x.rec < 0 OR x.rej < 0 THEN RAISE EXCEPTION 'RECEIPT_INVALID'; END IF;
++    IF x.rec = 0 AND x.rej = 0 THEN CONTINUE; END IF;
++    SELECT * INTO it FROM purchase_order_items WHERE id = x.item_id AND order_id = p_order FOR UPDATE;
++    IF NOT FOUND THEN RAISE EXCEPTION 'RECEIPT_INVALID'; END IF;
++    IF x.rec + x.rej > it.quantity - it.quantity_received - it.quantity_rejected THEN
++      RAISE EXCEPTION 'RECEIPT_EXCEEDS:%', it.product_id;
++    END IF;
++    UPDATE purchase_order_items SET quantity_received = quantity_received + x.rec, quantity_rejected = quantity_rejected + x.rej WHERE id = it.id;
++    INSERT INTO goods_receipt_lines (company_id, receipt_id, order_item_id, product_id, quantity_received, quantity_rejected)
++    VALUES (p_company, rid, it.id, it.product_id, x.rec, x.rej);
++    IF x.rec > 0 THEN
++      SELECT * INTO pr FROM products WHERE id = it.product_id AND company_id = p_company FOR UPDATE;
++      UPDATE products
++         SET quantity = quantity + x.rec,
++             avg_cost = CASE WHEN pr.quantity <= 0 OR pr.avg_cost = 0 THEN it.unit_cost
++                             ELSE round((pr.quantity * pr.avg_cost + x.rec * it.unit_cost) / (pr.quantity + x.rec), 4) END,
++             updated_at = now()
++       WHERE id = it.product_id AND company_id = p_company;
++      INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id, supplier_id, source_type, source_id, unit_cost)
++      VALUES (p_company, it.product_id, 'in', x.rec, 'Réception ' || rnum || ' (commande #' || p_order || ')', p_user, o.supplier_id, 'goods_receipt', rid::text, it.unit_cost);
++    END IF;
++    touched := touched + 1;
++  END LOOP;
++  IF touched = 0 THEN RAISE EXCEPTION 'RECEIPT_EMPTY'; END IF;
++
++  IF EXISTS (SELECT 1 FROM purchase_order_items WHERE order_id = p_order AND quantity_received + quantity_rejected < quantity) THEN
++    UPDATE purchase_orders SET status = 'partially_received' WHERE id = p_order;
++  ELSE
++    UPDATE purchase_orders SET status = 'received', received_at = now() WHERE id = p_order;
++  END IF;
++  RETURN rnum;
++END
++$$;
++
++-- Approuve une dépense en attente : crée le règlement (sortie de trésorerie) et marque la dépense payée.
++CREATE OR REPLACE FUNCTION approve_expense(p_company uuid, p_expense uuid, p_user bigint) RETURNS jsonb
++LANGUAGE plpgsql AS $$
++DECLARE
++  e expenses%ROWTYPE;
++  pay jsonb;
++BEGIN
++  SELECT * INTO e FROM expenses WHERE id = p_expense AND company_id = p_company FOR UPDATE;
++  IF NOT FOUND THEN RAISE EXCEPTION 'EXPENSE_NOT_FOUND'; END IF;
++  IF e.status <> 'pending' THEN RAISE EXCEPTION 'EXPENSE_BAD_STATUS'; END IF;
++  pay := record_payment(p_company, p_user, 'out', NULL, NULL, e.amount, e.method_id, e.expense_number, e.description, '[]'::jsonb);
++  UPDATE expenses SET status = 'paid', payment_id = (pay->>'id')::uuid, approved_by = p_user, approved_at = now() WHERE id = p_expense;
++  RETURN jsonb_build_object('id', p_expense, 'number', e.expense_number, 'paymentNumber', pay->>'number');
++END
++$$;
++
++-- Crée une dépense (numérotée côté serveur) ; p_approve = TRUE : approuvée et payée dans la même transaction.
++CREATE OR REPLACE FUNCTION create_expense(p_company uuid, p_user bigint, p_category uuid, p_amount numeric, p_description text,
++                                          p_date date, p_method uuid, p_approve boolean) RETURNS jsonb
++LANGUAGE plpgsql AS $$
++DECLARE
++  eid uuid := gen_random_uuid();
++  seq bigint;
++  enum text;
++BEGIN
++  IF p_amount IS NULL OR p_amount <= 0 THEN RAISE EXCEPTION 'EXPENSE_INVALID'; END IF;
++  IF NOT EXISTS (SELECT 1 FROM expense_categories WHERE id = p_category AND company_id = p_company AND status = 'active') THEN RAISE EXCEPTION 'EXPENSE_INVALID'; END IF;
++  IF NOT EXISTS (SELECT 1 FROM payment_methods WHERE id = p_method AND company_id = p_company AND status = 'active') THEN RAISE EXCEPTION 'PAYMENT_METHOD_INVALID'; END IF;
++  INSERT INTO document_sequences (company_id, document_type, period, next_value)
++  VALUES (p_company, 'expense', to_char(now(), 'YYYY'), 2)
++  ON CONFLICT (company_id, document_type, period) DO UPDATE SET next_value = document_sequences.next_value + 1
++  RETURNING next_value - 1 INTO seq;
++  enum := 'DEP-' || to_char(now(), 'YYYY') || '-' || lpad(seq::text, 5, '0');
++  INSERT INTO expenses (id, company_id, expense_number, category_id, amount, description, expense_date, method_id, created_by)
++  VALUES (eid, p_company, enum, p_category, p_amount, btrim(p_description), COALESCE(p_date, CURRENT_DATE), p_method, p_user);
++  IF p_approve THEN
++    PERFORM approve_expense(p_company, eid, p_user);
++  END IF;
++  RETURN jsonb_build_object('id', eid, 'number', enum, 'status', CASE WHEN p_approve THEN 'paid' ELSE 'pending' END);
++END
++$$;
++
++CREATE OR REPLACE FUNCTION close_expense(p_company uuid, p_expense uuid, p_user bigint, p_reason text) RETURNS text
++LANGUAGE plpgsql AS $$
++DECLARE
++  e expenses%ROWTYPE;
++BEGIN
++  SELECT * INTO e FROM expenses WHERE id = p_expense AND company_id = p_company FOR UPDATE;
++  IF NOT FOUND THEN RAISE EXCEPTION 'EXPENSE_NOT_FOUND'; END IF;
++  IF e.status = 'pending' THEN
++    UPDATE expenses SET status = 'rejected', closed_reason = p_reason WHERE id = p_expense;
++    RETURN 'rejected';
++  ELSIF e.status = 'paid' THEN
++    PERFORM reverse_payment(p_company, e.payment_id, p_user, 'Annulation de la dépense ' || e.expense_number || ' : ' || p_reason);
++    UPDATE expenses SET status = 'cancelled', closed_reason = p_reason WHERE id = p_expense;
++    RETURN 'cancelled';
++  END IF;
++  RAISE EXCEPTION 'EXPENSE_BAD_STATUS';
++END
++$$;
++
++-- Droits : le directeur peut saisir des dépenses (il peut déjà les approuver).
++INSERT INTO role_permissions (role_id, permission_id)
++SELECT r.id, p.id FROM roles r JOIN permissions p ON p.code = 'expenses.create'
++WHERE r.is_system AND r.name = 'Directeur'
++ON CONFLICT DO NOTHING;
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/api.ts Gestion_de_Stock-main/lib/api.ts
 --- orig/Gestion_de_Stock-main/lib/api.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/api.ts	2026-10-27 01:38:48.142985891 +0000
-@@ -42,3 +42,76 @@
++++ Gestion_de_Stock-main/lib/api.ts	2026-10-28 07:38:55.805858482 +0000
+@@ -42,3 +42,86 @@
  export function isForeignKey(error: unknown) {
    return /foreign key/i.test(errorText(error));
  }
@@ -5487,6 +6554,16 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +  if (/PAYMENT_ALLOCATION_EXCEEDS/.test(text)) return fail("Le total affecté dépasse le montant du paiement.", 400);
 +  if (/PAYMENT_INVALID/.test(text)) return fail("Paiement invalide.", 400);
 +  return null;
++}
++
++/** Traduit les erreurs levées par create_expense, approve_expense et close_expense. */
++export function expenseFailure(error: unknown) {
++  const text = errorText(error);
++  if (/EXPENSE_NOT_FOUND/.test(text)) return fail("Dépense introuvable.", 404);
++  if (/EXPENSE_BAD_STATUS/.test(text)) return fail("Cette dépense n’est pas dans un état qui permet cette action.", 409);
++  if (/EXPENSE_INVALID/.test(text)) return fail("Dépense invalide (montant ou catégorie).", 400);
++  if (/PAYMENT_METHOD_INVALID/.test(text)) return fail("Mode de paiement invalide ou désactivé.", 400);
++  return paymentFailure(error);
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/auth.ts Gestion_de_Stock-main/lib/auth.ts
 --- orig/Gestion_de_Stock-main/lib/auth.ts	2026-10-20 13:18:32.000000000 +0000
@@ -5996,7 +7073,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +}
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/roles.ts Gestion_de_Stock-main/lib/roles.ts
 --- orig/Gestion_de_Stock-main/lib/roles.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/roles.ts	2026-10-27 01:38:48.144423997 +0000
++++ Gestion_de_Stock-main/lib/roles.ts	2026-10-28 07:38:55.805858482 +0000
 @@ -9,6 +9,15 @@
    seller: "Vendeur"
  };
@@ -6013,7 +7090,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
  export function isRole(value: unknown): value is Role {
    return typeof value === "string" && (ROLES as readonly string[]).includes(value);
  }
-@@ -20,12 +29,16 @@
+@@ -20,12 +29,17 @@
    | "customers.view" | "customers.write"
    | "sales.view" | "sales.write" | "sales.cancel"
    | "reports.view" | "users.manage"
@@ -6024,7 +7101,8 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +  | "warehouses.view" | "warehouses.write"
 +  | "transfers.view" | "transfers.write" | "transfers.ship" | "transfers.receive"
 +  | "inventory.view" | "inventory.count" | "inventory.approve"
-+  | "payments.view" | "payments.write" | "payments.reverse";
++  | "payments.view" | "payments.write" | "payments.reverse"
++  | "finance.view" | "expenses.write" | "expenses.approve";
  
  const PERMISSIONS: Record<Permission, readonly Role[]> = {
    "products.write": ["super_admin", "admin", "manager", "storekeeper"],
@@ -6033,7 +7111,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
    "movements.view": ["super_admin", "admin", "manager", "storekeeper"],
    "movements.write": ["super_admin", "admin", "manager", "storekeeper"],
    "suppliers.view": ["super_admin", "admin", "manager", "storekeeper"],
-@@ -40,14 +53,68 @@
+@@ -40,14 +54,74 @@
    "purchases.view": ["super_admin", "admin", "manager", "storekeeper"],
    "purchases.write": ["super_admin", "admin", "manager"],
    "purchases.receive": ["super_admin", "admin", "manager", "storekeeper"],
@@ -6053,7 +7131,10 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +  "inventory.approve": ["super_admin", "admin", "manager"],
 +  "payments.view": ["super_admin", "admin", "manager", "seller"],
 +  "payments.write": ["super_admin", "admin", "seller"],
-+  "payments.reverse": ["super_admin", "admin", "manager"]
++  "payments.reverse": ["super_admin", "admin", "manager"],
++  "finance.view": ["super_admin", "admin", "manager"],
++  "expenses.write": ["super_admin", "admin", "manager"],
++  "expenses.approve": ["super_admin", "admin", "manager"]
  };
  
  export function can(role: Role, permission: Permission) {
@@ -6097,7 +7178,10 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +  "inventory.approve": ["inventory.count.approve"],
 +  "payments.view": ["payments.read"],
 +  "payments.write": ["payments.record"],
-+  "payments.reverse": ["payments.reverse"]
++  "payments.reverse": ["payments.reverse"],
++  "finance.view": ["reports.finance.read"],
++  "expenses.write": ["expenses.create"],
++  "expenses.approve": ["expenses.approve"]
 +};
 +
 +/** Liste de rôles historiques, étiquetée de la permission visée pour que le serveur vérifie la base. */
@@ -6117,8 +7201,19 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
  type Sql = NeonQueryFunction<false, false>;
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib/validation.ts Gestion_de_Stock-main/lib/validation.ts
 --- orig/Gestion_de_Stock-main/lib/validation.ts	2026-10-20 13:18:32.000000000 +0000
-+++ Gestion_de_Stock-main/lib/validation.ts	2026-10-28 01:45:08.148576802 +0000
-@@ -77,6 +77,8 @@
++++ Gestion_de_Stock-main/lib/validation.ts	2026-10-28 07:38:55.805858482 +0000
+@@ -6,7 +6,9 @@
+   category: z.string().trim().max(100).default("Général"),
+   quantity: z.coerce.number().int().min(0).max(100000000),
+   unitPrice: z.coerce.number().min(0).max(100000000000),
+-  minQuantity: z.coerce.number().int().min(0).max(100000000).default(0)
++  minQuantity: z.coerce.number().int().min(0).max(100000000).default(0),
++  /** Coût d'achat moyen initial (CUMP). Modifiable seulement tant qu'il est inconnu ; ensuite il suit les réceptions d'achat. */
++  avgCost: z.preprocess((v) => (v === "" || v === null || v === undefined ? undefined : v), z.coerce.number().min(0).max(100000000000).optional())
+ });
+ 
+ export type ProductInput = z.infer<typeof productInputSchema>;
+@@ -77,6 +79,8 @@
  export const saleSchema = z.object({
    customerId: optionalId,
    paymentMethod: z.enum(PAYMENT_METHODS),
@@ -6127,7 +7222,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
    items: z
      .array(
        z.object({
-@@ -106,6 +108,7 @@
+@@ -106,6 +110,7 @@
  export const purchaseSchema = z.object({
    supplierId: optionalId,
    note: optionalText(300),
@@ -6135,7 +7230,7 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
    items: z
      .array(
        z.object({
-@@ -129,3 +132,125 @@
+@@ -129,3 +134,139 @@
    currentPassword: z.string().min(1, "Saisissez votre mot de passe actuel").max(128),
    newPassword: passwordSchema
  });
@@ -6260,6 +7355,20 @@ diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/lib
 +    )
 +    .min(1, "Choisissez la vente à encaisser")
 +    .max(20)
++});
++
++export const expenseSchema = z.object({
++  categoryId: z.string().uuid("Catégorie invalide"),
++  amount: z.coerce.number().positive("Le montant doit être positif").max(1_000_000_000_000),
++  description: z.string().trim().min(2, "Décrivez la dépense").max(300),
++  expenseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date invalide").optional(),
++  methodId: z.string().uuid("Mode de paiement invalide"),
++  /** Approuver et payer tout de suite (réservé à ceux qui ont le droit d'approuver). */
++  approve: z.boolean().optional()
++});
++
++export const expenseCloseSchema = z.object({
++  reason: z.string().trim().min(3, "Indiquez le motif").max(300)
 +});
 diff -ruN -x node_modules -x tsconfig.tsbuildinfo orig/Gestion_de_Stock-main/scripts/check-isolation.mjs Gestion_de_Stock-main/scripts/check-isolation.mjs
 --- orig/Gestion_de_Stock-main/scripts/check-isolation.mjs	1970-01-01 00:00:00.000000000 +0000

@@ -99,7 +99,7 @@ export async function POST(request: Request) {
       ), agg AS (
         SELECT product_id, SUM(qty)::int AS qty FROM items GROUP BY product_id
       ), locked AS (
-        SELECT p.id, p.unit_price, p.quantity, a.qty
+        SELECT p.id, p.unit_price, p.avg_cost, p.quantity, a.qty
         FROM products p JOIN agg a ON a.product_id = p.id
         WHERE p.archived = FALSE AND p.company_id = ${auth.user.companyId}::uuid FOR UPDATE OF p
       ), ok AS (
@@ -114,8 +114,8 @@ export async function POST(request: Request) {
         WHERE (SELECT good FROM ok)
         RETURNING id, total_amount
       ), lines AS (
-        INSERT INTO sale_items (sale_id, product_id, quantity, unit_price)
-        SELECT sale.id, l.id, l.qty, l.unit_price FROM sale, locked l
+        INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, unit_cost)
+        SELECT sale.id, l.id, l.qty, l.unit_price, NULLIF(l.avg_cost, 0) FROM sale, locked l
         RETURNING 1
       ), dec AS (
         UPDATE products p SET quantity = p.quantity - l.qty, updated_at = NOW()

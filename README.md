@@ -189,3 +189,16 @@ Police unique **Inter** (chargée par `next/font/google` au build, donc héberg�
 - **Non configuré** : tant que les variables ne sont pas renseignées (voir `.env.example`), l'encaissement Orange/MTN reste possible en mode manuel (déjà confirmé), avec un message explicite. `GET /api/payments/mobile/config` indique les noms des variables manquantes, jamais leurs valeurs.
 - **À faire pour passer en production** : obtenir les accès chez MTN MoMo Developer (produit Collections, puis activation Cameroun) et chez Orange Developer / Orange Money (clé marchand), renseigner les variables dans Vercel, tester d'abord en `sandbox` (MTN : numéros de test fournis par MTN, devise EUR ; Orange : devise OUV), puis passer `*_ENV=production`.
 - **Limites** : encaissement des ventes uniquement (pas encore de paiement sortant vers les fournisseurs par mobile money) ; ces connexions n'ont pas pu être testées ici sans accès réseau ni clés — elles suivent la documentation des opérateurs et doivent être validées en sandbox.
+
+## Valorisation CUMP, marges, dépenses et trésorerie (migration 0018)
+
+- **CUMP** (coût unitaire moyen pondéré) : à chaque réception d'achat, nouveau coût moyen = (stock avant × coût moyen + quantité reçue × coût d'achat) ÷ (stock avant + quantité reçue). Si le coût moyen d'un produit est encore inconnu, le coût de la première réception est adopté. Le coût moyen d'un produit sans historique peut être saisi une fois dans la fiche produit ; ensuite il est calculé automatiquement.
+- **Marges** : chaque ligne de vente garde le coût moyen du moment (`sale_items.unit_cost`), donc les marges passées ne bougent plus. Les ventes sans coût connu sont exclues du calcul et signalées à part (jamais comptées comme 100 % de marge).
+- **Dépenses** : catégories par entreprise, numéros `DEP-AAAA-00001`. Une dépense est « à approuver » puis « payée » (l'approbation crée le règlement et fait baisser la trésorerie dans la même transaction), ou « rejetée ». Annuler une dépense payée contrepasse son règlement.
+- **Trésorerie** : comptes (caisse, Orange Money, MTN Mobile Money, banque) rattachés aux modes de paiement. Solde = solde d'ouverture + encaissements validés − règlements validés (les paiements en attente ou contrepassés ne comptent pas). Le solde d'ouverture se règle depuis Finance → Trésorerie.
+- **Synthèse financière** (`GET /api/finance/summary`) : chiffre d'affaires, marge brute, dépenses, résultat d'exploitation, créances, dettes, valeur du stock au coût, produits les plus rentables.
+- **Limites** : les entrées de stock saisies à la main (hors achats) ne modifient pas le CUMP ; les frais d'approvisionnement ne sont pas encore intégrés au coût ; la clôture de caisse (comptage de fin de journée) reste à faire.
+
+## Hiérarchie typographique
+
+Police Inter, trois graisses seulement : **400** pour le texte courant, **500** pour les libellés, boutons, menu, badges, titres de cartes et chiffres clés, **600** uniquement pour le titre de page et le montant du total. Aucun 700 ni 800.

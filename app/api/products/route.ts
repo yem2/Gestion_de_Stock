@@ -13,7 +13,7 @@ export async function GET(request: Request) {
   try {
     const sql = getSql();
     const rows = await sql`
-      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
+      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice", avg_cost AS "avgCost",
              min_quantity AS "minQuantity", created_at AS "createdAt"
       FROM products WHERE company_id = ${auth.user.companyId}::uuid AND archived = FALSE
       ORDER BY name ASC LIMIT 1000
@@ -29,21 +29,21 @@ export async function POST(request: Request) {
   if ("error" in auth) return auth.error;
   const body = await parseBody(request, productInputSchema);
   if ("error" in body) return body.error;
-  const { sku, name, category, quantity, unitPrice, minQuantity } = body.data;
+  const { sku, name, category, quantity, unitPrice, minQuantity, avgCost } = body.data;
 
   try {
     const sql = getSql();
     const rows = await sql`
       WITH p AS (
-        INSERT INTO products (company_id, sku, name, category, quantity, unit_price, min_quantity)
-        VALUES (${auth.user.companyId}::uuid, ${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity})
-        RETURNING id, company_id, sku, name, category, quantity, unit_price, min_quantity, created_at
+        INSERT INTO products (company_id, sku, name, category, quantity, unit_price, min_quantity, avg_cost)
+        VALUES (${auth.user.companyId}::uuid, ${sku}, ${name}, ${category || "Général"}, ${quantity}, ${unitPrice}, ${minQuantity}, ${avgCost ?? 0})
+        RETURNING id, company_id, sku, name, category, quantity, unit_price, min_quantity, avg_cost, created_at
       ), m AS (
         INSERT INTO stock_movements (company_id, product_id, movement_type, quantity, note, user_id)
         SELECT company_id, id, 'in', quantity, 'Stock initial', ${auth.user.id}::bigint FROM p WHERE quantity > 0
         RETURNING 1
       )
-      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice",
+      SELECT id, sku, name, category, quantity, unit_price AS "unitPrice", avg_cost AS "avgCost",
              min_quantity AS "minQuantity", created_at AS "createdAt"
       FROM p
     `;

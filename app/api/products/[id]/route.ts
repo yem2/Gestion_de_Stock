@@ -27,9 +27,10 @@ export async function PATCH(request: Request, context: Context) {
         category = COALESCE(${d.category ?? null}::text, category),
         unit_price = COALESCE(${d.unitPrice ?? null}::numeric, unit_price),
         min_quantity = COALESCE(${d.minQuantity ?? null}::int, min_quantity),
+        avg_cost = CASE WHEN avg_cost = 0 THEN COALESCE(${d.avgCost ?? null}::numeric, avg_cost) ELSE avg_cost END,
         updated_at = NOW()
       WHERE id = ${id} AND company_id = ${auth.user.companyId}::uuid AND archived = FALSE
-      RETURNING id, sku, name, category, quantity, unit_price AS "unitPrice", min_quantity AS "minQuantity"
+      RETURNING id, sku, name, category, quantity, unit_price AS "unitPrice", avg_cost AS "avgCost", min_quantity AS "minQuantity"
     `;
     if (!rows[0]) return fail("Produit introuvable.", 404);
     await logAudit(auth.user.id, "product_update", "product", id);

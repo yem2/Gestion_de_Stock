@@ -3,12 +3,11 @@
 -- « ordered » = commande approuvée / passée, prête à être réceptionnée (statut déjà utilisé par l'application).
 -- Les commandes existantes ne changent pas. Idempotente.
 
-ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS quantity_received integer NOT NULL DEFAULT 0;
-ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS quantity_rejected integer NOT NULL DEFAULT 0;
-
--- Rattrapage : les commandes déjà réceptionnées sont considérées comme entièrement reçues (après création des colonnes).
 UPDATE purchase_order_items i SET quantity_received = i.quantity
 FROM purchase_orders o WHERE o.id = i.order_id AND o.status = 'received' AND i.quantity_received = 0;
+
+ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS quantity_received integer NOT NULL DEFAULT 0;
+ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS quantity_rejected integer NOT NULL DEFAULT 0;
 ALTER TABLE purchase_order_items DROP CONSTRAINT IF EXISTS purchase_order_items_receipt_check;
 ALTER TABLE purchase_order_items ADD CONSTRAINT purchase_order_items_receipt_check
   CHECK (quantity_received >= 0 AND quantity_rejected >= 0 AND quantity_received + quantity_rejected <= quantity);
