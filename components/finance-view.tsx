@@ -169,7 +169,7 @@ export default function FinanceView({ role }: { role: Role }) {
 
   return (
     <>
-      <PageHeader title="Finance" subtitle="Marges, dépenses et trésorerie : le résultat réel de votre activité.">
+      <PageHeader title="Trésorerie et marges" subtitle="Marges, dépenses et soldes de vos comptes : le résultat réel de votre activité.">
         {canWrite && <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={18} /> Nouvelle dépense</button>}
       </PageHeader>
       {notice && <Alert kind="success">{notice}</Alert>}

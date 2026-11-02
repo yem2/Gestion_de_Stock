@@ -347,3 +347,12 @@ h1,h2,h3{font-weight:500}
 .bell-empty{margin:0;padding:22px 14px;text-align:center;color:var(--muted);font-size:.9rem}
 .bell-foot{display:block;padding:11px 14px;border-top:1px solid var(--line);text-align:center;color:var(--accent);font-size:.88rem;font-weight:500}
 @media (max-width:479px){.bell-panel{position:fixed;left:8px;right:8px;top:56px;width:auto}}
+
+/* Menu regroupé par module */
+.nav{gap:2px;overflow-y:auto}
+.nav-group{display:flex;flex-direction:column;gap:2px;margin-bottom:4px}
+.nav-group-title{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:10px 14px 4px;border:0;background:none;color:#7c7c88;font-size:.72rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
+.nav-group-title:hover{color:#b9b9c2}
+.nav-chevron{transition:transform .15s ease}
+.nav-chevron.is-collapsed{transform:rotate(-90deg)}
+.nav-item{min-height:38px;font-size:.92rem}
