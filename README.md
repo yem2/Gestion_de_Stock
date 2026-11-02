@@ -211,3 +211,18 @@ Police Inter, trois graisses seulement : **400** pour le texte courant, **500** 
 - **Fiabilité (7.9)** : une erreur de notification ne fait jamais échouer la vente, la réception ou le paiement qui l'a provoquée (le déclencheur et `notifyPermission` absorbent toute erreur).
 - **Canaux externes (e-mail, SMS, WhatsApp)** : pas encore branchés. Les tables `notification_deliveries` et `outbox_events` (0010) sont prêtes ; il reste à choisir les services d'envoi et à écrire les adaptateurs.
 - Limites : pas encore de préférences par utilisateur (choix des types et des canaux) ni de rappel périodique des alertes non lues.
+
+## Organisation par module
+
+Le menu est regroupé par grand module (chaque section est repliable ; l'état est mémorisé dans le navigateur et le groupe de la page ouverte reste toujours déplié) :
+
+| Section | Pages |
+|---|---|
+| (tête de menu) | Tableau de bord |
+| **Stock** | Produits, Mouvements, Entrepôts, Transferts, Inventaires |
+| **Ventes** | Ventes, Clients |
+| **Achats** | Achats, Fournisseurs |
+| **Finance** | Paiements, Trésorerie et marges, Rapports |
+| **Administration** | Utilisateurs, Journal, Paramètres |
+
+Les adresses des pages ne changent pas. Une section sans page autorisée pour le rôle de l'utilisateur est masquée.
