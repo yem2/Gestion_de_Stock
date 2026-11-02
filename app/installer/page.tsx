@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import QRCode from "qrcode";
 import InstallHub from "@/components/install-hub";
+import { qrSvg } from "@/lib/qr";
 
 export const metadata: Metadata = { title: "Installer l’application | Gestion de Stock" };
 export const dynamic = "force-dynamic";
@@ -18,6 +18,5 @@ async function publicUrl() {
 
 export default async function InstallerPage() {
   const url = await publicUrl();
-  const qrSvg = await QRCode.toString(url, { type: "svg", margin: 1, width: 168, errorCorrectionLevel: "M", color: { dark: "#15171c", light: "#ffffff" } });
-  return <InstallHub qrSvg={qrSvg} url={url} />;
+  return <InstallHub qrSvg={qrSvg(url)} url={url} />;
 }

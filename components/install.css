@@ -1,0 +1,55 @@
+/* Styles de la fenêtre d'installation et de la page /installer (indépendants de globals.css). */
+/* ===== Installation de l'application (Android, iPhone, ordinateur) ===== */
+.install-sheet{position:fixed;z-index:35;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));
+  max-height:calc(100dvh - 24px);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:16px;
+  box-shadow:0 14px 44px rgba(0,0,0,.22);padding:14px 14px 10px}
+.install-head{display:flex;align-items:flex-start;gap:12px}
+.install-head>div{flex:1;min-width:0}
+.install-head h2{font-size:var(--fs-md);margin-bottom:2px}
+.install-head p{color:var(--muted);font-size:var(--fs-sm)}
+.install-icon{flex:none;display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:var(--black);color:#fff}
+.install-steps{list-style:decimal;margin:12px 0 0;padding:12px 14px 12px 32px;border-radius:12px;background:var(--bg);font-size:var(--fs-sm);display:grid;gap:8px}
+.install-steps svg{display:inline-block;vertical-align:-2px}
+.install-note{margin-top:12px;padding:10px 12px;border-radius:10px;background:#fff7e6;color:#7a4b00;font-size:var(--fs-sm)}
+.install-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.install-actions .btn{flex:1 1 auto}
+.install-foot{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0 12px;margin-top:4px}
+.install-never,.install-all{display:inline-flex;align-items:center;margin:0;padding:10px 0;border:0;background:none;color:var(--muted);font:inherit;font-size:var(--fs-xs);cursor:pointer;text-decoration:underline}
+.install-menu{width:100%;border:0;background:none;font:inherit;cursor:pointer;text-align:left}
+@media (min-width:768px){.install-sheet{left:auto;right:20px;bottom:20px;width:400px}}
+@media print{.install-sheet{display:none}}
+.install-sheet .icon-btn{width:44px;height:44px;margin:-6px -6px 0 0}
+.install-never,.install-all{min-height:44px}
+@media (max-height:520px){.install-head p{display:none}.install-steps{margin-top:8px}}
+/* Téléphones : fenêtre compacte (le texte d'accroche est réservé aux grands écrans) et place réservée en bas de page */
+@media (max-width:767px){
+  .install-head p{display:none}
+  .install-head h2{margin-top:2px}
+  body:has(.install-sheet){padding-bottom:190px}
+}
+/* Page « Installer l'application » (toutes les versions) */
+.hub{max-width:1120px;margin:0 auto;padding:24px 16px calc(40px + env(safe-area-inset-bottom));display:grid;gap:20px}
+.hub-head{display:flex;align-items:center;gap:16px}
+.hub-head h1{font-size:var(--fs-h1)}
+.hub-head p{color:var(--muted);margin-top:4px}
+.hub-logo{flex:none;width:64px;height:64px;border-radius:16px}
+.hub-ok{padding:12px 14px;border-radius:12px;background:var(--ok-soft);color:#14532d;font-size:var(--fs-sm)}
+.hub-grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}
+.hub-card{display:flex;flex-direction:column;gap:4px;padding:16px;border:1px solid var(--line);border-radius:16px;background:#fff}
+.hub-card.mine{border-color:var(--accent);box-shadow:0 0 0 3px rgba(215,25,32,.12)}
+.hub-card-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.hub-card-head>div{flex:1;min-width:0}
+.hub-card-head h2{font-size:var(--fs-md)}
+.hub-card-head p{color:var(--muted);font-size:var(--fs-sm)}
+.hub-badge{padding:4px 10px;border-radius:999px;background:var(--accent);color:#fff;font-size:var(--fs-xs);font-weight:500}
+.hub-card .install-actions{margin-top:auto;padding-top:12px}
+.hub-hint{margin-top:8px;color:var(--muted);font-size:var(--fs-xs)}
+.hub-qr{display:flex;align-items:center;gap:20px;flex-wrap:wrap;padding:18px;border:1px solid var(--line);border-radius:16px;background:#fff}
+.hub-qr>div:last-child{flex:1;min-width:220px}
+.hub-qr h2{font-size:var(--fs-md);margin-bottom:4px}
+.hub-qr p{color:var(--muted);font-size:var(--fs-sm)}
+.hub-qr-code{flex:none;width:168px;height:168px;line-height:0}
+.hub-qr-code svg{width:100%;height:100%}
+.hub-url{margin-top:8px;font-size:var(--fs-xs);overflow-wrap:anywhere;color:var(--ink)!important}
+.hub-back a{display:inline-flex;align-items:center;min-height:44px;color:var(--accent);font-weight:500;text-decoration:none}
+@media print{.hub-qr{break-inside:avoid}}
