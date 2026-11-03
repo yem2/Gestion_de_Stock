@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   try {
     const sql = getSql();
     const expenses = await sql`
-      SELECT e.id, e.expense_number AS number, e.amount, e.description, e.expense_date AS "expenseDate", e.status,
+      SELECT e.id, e.expense_number AS number, e.amount, e.description, to_char(e.expense_date, 'YYYY-MM-DD') AS "expenseDate", e.status,
              e.closed_reason AS "closedReason", e.created_at AS "createdAt",
              c.name AS category, m.name AS method, u.name AS "createdBy"
       FROM expenses e

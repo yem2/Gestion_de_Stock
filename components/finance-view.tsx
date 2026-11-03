@@ -233,7 +233,7 @@ export default function FinanceView({ role }: { role: Role }) {
                 {expenses.data?.expenses.map((e) => (
                   <tr key={e.id}>
                     <td data-label="N°"><strong>{e.number}</strong></td>
-                    <td data-label="Date">{new Date(e.expenseDate).toLocaleDateString("fr-FR")}</td>
+                    <td data-label="Date">{e.expenseDate.split("-").reverse().join("/")}</td>
                     <td data-label="Catégorie">{e.category}</td>
                     <td data-label="Description">{e.description}{e.closedReason && <small> · {e.closedReason}</small>}</td>
                     <td data-label="Payée avec">{e.method}</td>

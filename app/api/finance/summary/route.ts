@@ -25,10 +25,11 @@ export async function GET(request: Request) {
   try {
     const sql = getSql();
     const range = await sql`
-      SELECT COALESCE(${from}::date, date_trunc('month', NOW() AT TIME ZONE ${TZ})::date) AS "from",
-             COALESCE(${to}::date, (NOW() AT TIME ZONE ${TZ})::date) AS "to"`;
-    const start = String(range[0].from).slice(0, 10);
-    const end = String(range[0].to).slice(0, 10);
+      SELECT to_char(COALESCE(${from}::date, date_trunc('month', NOW() AT TIME ZONE ${TZ})::date), 'YYYY-MM-DD') AS "from",
+             to_char(COALESCE(${to}::date, (NOW() AT TIME ZONE ${TZ})::date), 'YYYY-MM-DD') AS "to"`;
+    // to_char : le pilote transformerait une colonne « date » en objet Date, impossible à redonner à SQL comme texte
+    const start = String(range[0].from);
+    const end = String(range[0].to);
 
     const [sales, costs, expenses, byCategory, receivables, payables, accounts, topProducts, stock] = await Promise.all([
       sql`SELECT COALESCE(SUM(total_amount), 0) AS revenue, COUNT(*)::int AS count FROM sales
